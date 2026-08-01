@@ -1,0 +1,154 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Playfair+Display:wght@600;700;800&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 30 25% 97%;
+    --foreground: 220 20% 20%;
+    --primary: 220 40% 15%;
+    --primary-foreground: 30 25% 97%;
+    --secondary: 45 65% 52%;
+    --secondary-foreground: 220 20% 20%;
+    --accent: 45 65% 95%;
+    --accent-foreground: 220 20% 20%;
+    --muted: 220 20% 95%;
+    --muted-foreground: 220 20% 40%;
+    --card: 0 0% 100%;
+    --card-foreground: 220 20% 20%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 220 20% 20%;
+    --border: 220 20% 85%;
+    --input: 220 20% 85%;
+    --ring: 220 40% 15%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+    --radius: 0.5rem;
+    
+    --sidebar-background: 0 0% 98%;
+    --sidebar-foreground: 240 5.3% 26.1%;
+    --sidebar-primary: 240 5.9% 10%;
+    --sidebar-primary-foreground: 0 0% 98%;
+    --sidebar-accent: 240 4.8% 95.9%;
+    --sidebar-accent-foreground: 240 5.9% 10%;
+    --sidebar-border: 220 13% 91%;
+    --sidebar-ring: 217.2 91.2% 59.8%;
+  }
+
+  .dark {
+    --background: 220 40% 10%;
+    --foreground: 30 25% 97%;
+    --primary: 45 65% 52%;
+    --primary-foreground: 220 40% 10%;
+    --secondary: 220 40% 15%;
+    --secondary-foreground: 30 25% 97%;
+    --accent: 220 40% 20%;
+    --accent-foreground: 30 25% 97%;
+    --muted: 220 40% 20%;
+    --muted-foreground: 220 20% 70%;
+    --card: 220 40% 12%;
+    --card-foreground: 30 25% 97%;
+    --popover: 220 40% 12%;
+    --popover-foreground: 30 25% 97%;
+    --border: 220 40% 25%;
+    --input: 220 40% 25%;
+    --ring: 45 65% 52%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+    
+    --sidebar-background: 240 5.9% 10%;
+    --sidebar-foreground: 240 4.8% 95.9%;
+    --sidebar-primary: 224.3 76.3% 48%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 240 3.7% 15.9%;
+    --sidebar-accent-foreground: 240 4.8% 95.9%;
+    --sidebar-border: 240 3.7% 15.9%;
+    --sidebar-ring: 217.2 91.2% 59.8%;
+  }
+
+  * {
+    border-color: hsl(var(--border));
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    font-family: "DM Sans", sans-serif;
+    background-color: hsl(var(--background));
+    color: hsl(var(--foreground));
+    overflow-x: clip;
+    line-height: 1.625;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-family: "Playfair Display", serif;
+    font-weight: 700;
+    line-height: 1.2;
+    letter-spacing: -0.02em;
+    text-wrap: balance;
+  }
+
+  h1 {
+    font-size: clamp(2.5rem, 5vw, 4rem);
+    font-weight: 800;
+  }
+
+  h2 {
+    font-size: clamp(2rem, 4vw, 3rem);
+  }
+
+  h3 {
+    font-size: clamp(1.5rem, 3vw, 2rem);
+  }
+
+  p {
+    max-width: 65ch;
+  }
+
+  button {
+    font-family: "DM Sans", sans-serif;
+    font-weight: 600;
+    transition: all 200ms ease;
+  }
+
+  button:hover {
+    transform: translateY(-1px);
+  }
+
+  button:active {
+    transform: scale(0.98);
+  }
+
+  a {
+    transition: all 200ms ease;
+  }
+
+  input, textarea, select {
+    font-family: "DM Sans", sans-serif;
+    transition: all 200ms ease;
+  }
+
+  input:focus, textarea:focus, select:focus {
+    outline: none;
+    ring: 2px;
+    ring-color: hsl(var(--ring));
+  }
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+
+  .font-display {
+    font-family: "Playfair Display", serif;
+  }
+
+  .font-body {
+    font-family: "DM Sans", sans-serif;
+  }
+}

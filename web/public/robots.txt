@@ -1,0 +1,3 @@
+User-agent: *
+Allow: /
+Sitemap: https://frontiva.online/sitemap.xml
