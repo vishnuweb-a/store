@@ -1,16 +1,17 @@
 import React, { useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ShoppingCart as ShoppingCartIcon, X } from 'lucide-react';
 import { useCart } from '@/hooks/useCart';
 import { Button } from '@/components/ui/button';
-import { initializeCheckout } from '@/api/EcommerceApi';
 import { useToast } from '@/hooks/use-toast';
 
 const ShoppingCart = ({ isCartOpen, setIsCartOpen }) => {
   const { toast } = useToast();
   const { cartItems, removeFromCart, updateQuantity, getCartTotal } = useCart();
+  const navigate = useNavigate();
 
-  const handleCheckout = useCallback(async () => {
+  const handleCheckout = useCallback(() => {
     if (cartItems.length === 0) {
       toast({
         title: 'Your cart is empty',
@@ -20,26 +21,9 @@ const ShoppingCart = ({ isCartOpen, setIsCartOpen }) => {
       return;
     }
 
-    try {
-      const items = cartItems.map(item => ({
-        variant_id: item.variant.id,
-        quantity: item.quantity,
-      }));
-
-      const successUrl = `${window.location.origin}/success`;
-      const cancelUrl = window.location.href;
-
-      const { url } = await initializeCheckout({ items, successUrl, cancelUrl });
-
-      window.location.href = url;
-    } catch (error) {
-      toast({
-        title: 'Checkout Error',
-        description: 'There was a problem initializing checkout. Please try again.',
-        variant: 'destructive',
-      });
-    }
-  }, [cartItems, toast]);
+    setIsCartOpen(false);
+    navigate('/checkout');
+  }, [cartItems, toast, navigate, setIsCartOpen]);
 
   return (
     <AnimatePresence>

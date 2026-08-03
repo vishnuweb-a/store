@@ -1,13 +1,15 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Helmet } from 'react-helmet';
 import { useNavigate } from 'react-router-dom';
-import { Loader2 } from 'lucide-react';
+import { motion } from 'framer-motion';
+import { Banknote, CheckCircle2, Loader2, MapPin, Phone, User } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Checkbox } from '@/components/ui/checkbox';
+import { Textarea } from '@/components/ui/textarea';
 import { useCart } from '@/hooks/useCart';
 import { useToast } from '@/hooks/use-toast';
-import { initializeCheckout } from '@/api/EcommerceApi';
+import { formatCurrency } from '@/api/EcommerceApi';
+import { createCodOrder } from '@/api/OrdersApi';
 import Header from '@/components/Header';
 import Footer from '@/components/Footer';
 import ShoppingCart from '@/components/ShoppingCart';
@@ -15,65 +17,87 @@ import ShoppingCart from '@/components/ShoppingCart';
 const CheckoutPage = () => {
   const [isCartOpen, setIsCartOpen] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
-  const [sameAsShipping, setSameAsShipping] = useState(true);
-  const { cartItems, getCartTotal } = useCart();
+  const [errors, setErrors] = useState({});
+  const orderPlacedRef = useRef(false);
+  const { cartItems, clearCart } = useCart();
   const { toast } = useToast();
   const navigate = useNavigate();
 
-  const [shippingInfo, setShippingInfo] = useState({
+  const [customerInfo, setCustomerInfo] = useState({
     fullName: '',
+    phone: '',
     address: '',
-    city: '',
-    state: '',
-    zipCode: '',
+    landmark: '',
   });
 
-  const [billingInfo, setBillingInfo] = useState({
-    fullName: '',
-    address: '',
-    city: '',
-    state: '',
-    zipCode: '',
-  });
+  useEffect(() => {
+    if (cartItems.length === 0 && !orderPlacedRef.current) {
+      navigate('/cart');
+    }
+  }, [cartItems, navigate]);
 
-  const handleShippingChange = (e) => {
-    setShippingInfo({ ...shippingInfo, [e.target.name]: e.target.value });
+  const currencyInfo = cartItems[0]?.variant.currency_info;
+  const totalInCents = cartItems.reduce((total, item) => {
+    const price = item.variant.sale_price_in_cents ?? item.variant.price_in_cents;
+    return total + price * item.quantity;
+  }, 0);
+  const totalFormatted = formatCurrency(totalInCents, currencyInfo);
+
+  const validate = () => {
+    const nextErrors = {};
+
+    if (!customerInfo.fullName.trim()) {
+      nextErrors.fullName = 'Full name is required.';
+    } else if (customerInfo.fullName.trim().length < 3) {
+      nextErrors.fullName = 'Name must be at least 3 characters.';
+    }
+
+    if (!customerInfo.phone) {
+      nextErrors.phone = 'Phone number is required.';
+    } else if (!/^\d{10}$/.test(customerInfo.phone)) {
+      nextErrors.phone = 'Enter a valid 10-digit phone number.';
+    }
+
+    if (!customerInfo.address.trim()) {
+      nextErrors.address = 'Delivery address is required.';
+    }
+
+    return nextErrors;
   };
 
-  const handleBillingChange = (e) => {
-    setBillingInfo({ ...billingInfo, [e.target.name]: e.target.value });
+  const handleChange = (e) => {
+    const { name, value } = e.target;
+    const nextValue = name === 'phone' ? value.replace(/\D/g, '').slice(0, 10) : value;
+
+    setCustomerInfo((prev) => ({ ...prev, [name]: nextValue }));
+    setErrors((prev) => {
+      if (!prev[name]) return prev;
+      const { [name]: _removed, ...rest } = prev;
+      return rest;
+    });
   };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
 
-    if (cartItems.length === 0) {
-      toast({
-        title: 'Cart is empty',
-        description: 'Please add items to your cart before checking out.',
-        variant: 'destructive',
-      });
+    const nextErrors = validate();
+    if (Object.keys(nextErrors).length > 0) {
+      setErrors(nextErrors);
       return;
     }
 
     setIsProcessing(true);
 
     try {
-      const items = cartItems.map(item => ({
-        variant_id: item.variant.id,
-        quantity: item.quantity,
-      }));
+      const order = await createCodOrder({ customer: customerInfo, cartItems });
 
-      const successUrl = `${window.location.origin}/success`;
-      const cancelUrl = window.location.href;
-
-      const { url } = await initializeCheckout({ items, successUrl, cancelUrl });
-
-      window.location.href = url;
+      orderPlacedRef.current = true;
+      clearCart();
+      navigate('/success', { state: { order }, replace: true });
     } catch (error) {
       toast({
-        title: 'Checkout failed',
-        description: 'There was a problem processing your order. Please try again.',
+        title: 'Could not place order',
+        description: error.message || 'There was a problem placing your order. Please try again.',
         variant: 'destructive',
       });
       setIsProcessing(false);
@@ -81,15 +105,21 @@ const CheckoutPage = () => {
   };
 
   if (cartItems.length === 0) {
-    navigate('/cart');
     return null;
   }
+
+  const fieldError = (name) =>
+    errors[name] ? (
+      <p className="mt-2 text-sm text-destructive" role="alert">
+        {errors[name]}
+      </p>
+    ) : null;
 
   return (
     <>
       <Helmet>
         <title>Checkout - FRONTIVA</title>
-        <meta name="description" content="Complete your purchase securely." />
+        <meta name="description" content="Complete your order with Cash on Delivery." />
       </Helmet>
 
       <div className="min-h-screen flex flex-col">
@@ -98,227 +128,187 @@ const CheckoutPage = () => {
 
         <main className="flex-grow py-12">
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div className="mb-8">
+            <motion.div
+              initial={{ opacity: 0, y: 12 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.4 }}
+              className="mb-8"
+            >
               <h1 className="font-display text-4xl md:text-5xl font-bold mb-4 text-foreground">Checkout</h1>
-              <p className="text-lg text-muted-foreground">Complete your order</p>
-            </div>
+              <p className="text-lg text-muted-foreground">Enter your delivery details to place your order</p>
+            </motion.div>
 
-            <form onSubmit={handleSubmit}>
+            <form onSubmit={handleSubmit} noValidate>
               <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
                 <div className="lg:col-span-2 space-y-8">
-                  <div className="bg-card p-6 rounded-xl shadow-sm">
-                    <h2 className="font-display text-2xl font-bold mb-6 text-card-foreground">Shipping Information</h2>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      <div className="md:col-span-2">
-                        <label htmlFor="shipping-fullName" className="block text-sm font-medium mb-2 text-card-foreground">
-                          Full Name
+                  <motion.div
+                    initial={{ opacity: 0, y: 12 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ duration: 0.4, delay: 0.1 }}
+                    className="bg-card p-6 rounded-xl shadow-sm"
+                  >
+                    <h2 className="font-display text-2xl font-bold mb-6 text-card-foreground">Delivery Information</h2>
+                    <div className="space-y-4">
+                      <div>
+                        <label htmlFor="fullName" className="block text-sm font-medium mb-2 text-card-foreground">
+                          <User className="inline h-4 w-4 mr-1 text-muted-foreground" aria-hidden="true" />
+                          Full Name <span className="text-destructive">*</span>
                         </label>
                         <Input
-                          id="shipping-fullName"
+                          id="fullName"
                           name="fullName"
                           type="text"
-                          required
-                          value={shippingInfo.fullName}
-                          onChange={handleShippingChange}
-                          className="text-foreground"
+                          autoComplete="name"
+                          placeholder="Your full name"
+                          value={customerInfo.fullName}
+                          onChange={handleChange}
+                          aria-invalid={Boolean(errors.fullName)}
+                          className="text-foreground h-11"
                         />
+                        {fieldError('fullName')}
                       </div>
-                      <div className="md:col-span-2">
-                        <label htmlFor="shipping-address" className="block text-sm font-medium mb-2 text-card-foreground">
-                          Address
+                      <div>
+                        <label htmlFor="phone" className="block text-sm font-medium mb-2 text-card-foreground">
+                          <Phone className="inline h-4 w-4 mr-1 text-muted-foreground" aria-hidden="true" />
+                          Phone Number <span className="text-destructive">*</span>
                         </label>
                         <Input
-                          id="shipping-address"
+                          id="phone"
+                          name="phone"
+                          type="tel"
+                          inputMode="numeric"
+                          autoComplete="tel"
+                          placeholder="10-digit mobile number"
+                          value={customerInfo.phone}
+                          onChange={handleChange}
+                          aria-invalid={Boolean(errors.phone)}
+                          className="text-foreground h-11"
+                        />
+                        {fieldError('phone')}
+                      </div>
+                      <div>
+                        <label htmlFor="address" className="block text-sm font-medium mb-2 text-card-foreground">
+                          <MapPin className="inline h-4 w-4 mr-1 text-muted-foreground" aria-hidden="true" />
+                          Full Address <span className="text-destructive">*</span>
+                        </label>
+                        <Textarea
+                          id="address"
                           name="address"
-                          type="text"
-                          required
-                          value={shippingInfo.address}
-                          onChange={handleShippingChange}
+                          rows={3}
+                          autoComplete="street-address"
+                          placeholder="House / flat, street, area, city, state, PIN code"
+                          value={customerInfo.address}
+                          onChange={handleChange}
+                          aria-invalid={Boolean(errors.address)}
                           className="text-foreground"
                         />
+                        {fieldError('address')}
                       </div>
                       <div>
-                        <label htmlFor="shipping-city" className="block text-sm font-medium mb-2 text-card-foreground">
-                          City
+                        <label htmlFor="landmark" className="block text-sm font-medium mb-2 text-card-foreground">
+                          Landmark <span className="text-muted-foreground font-normal">(optional)</span>
                         </label>
                         <Input
-                          id="shipping-city"
-                          name="city"
+                          id="landmark"
+                          name="landmark"
                           type="text"
-                          required
-                          value={shippingInfo.city}
-                          onChange={handleShippingChange}
-                          className="text-foreground"
-                        />
-                      </div>
-                      <div>
-                        <label htmlFor="shipping-state" className="block text-sm font-medium mb-2 text-card-foreground">
-                          State
-                        </label>
-                        <Input
-                          id="shipping-state"
-                          name="state"
-                          type="text"
-                          required
-                          value={shippingInfo.state}
-                          onChange={handleShippingChange}
-                          className="text-foreground"
-                        />
-                      </div>
-                      <div>
-                        <label htmlFor="shipping-zipCode" className="block text-sm font-medium mb-2 text-card-foreground">
-                          ZIP Code
-                        </label>
-                        <Input
-                          id="shipping-zipCode"
-                          name="zipCode"
-                          type="text"
-                          required
-                          value={shippingInfo.zipCode}
-                          onChange={handleShippingChange}
-                          className="text-foreground"
+                          placeholder="Nearby landmark to help delivery"
+                          value={customerInfo.landmark}
+                          onChange={handleChange}
+                          className="text-foreground h-11"
                         />
                       </div>
                     </div>
-                  </div>
+                  </motion.div>
 
-                  <div className="bg-card p-6 rounded-xl shadow-sm">
-                    <div className="flex items-center justify-between mb-6">
-                      <h2 className="font-display text-2xl font-bold text-card-foreground">Billing Information</h2>
-                      <div className="flex items-center gap-2">
-                        <Checkbox
-                          id="sameAsShipping"
-                          checked={sameAsShipping}
-                          onCheckedChange={setSameAsShipping}
-                        />
-                        <label htmlFor="sameAsShipping" className="text-sm font-medium text-card-foreground cursor-pointer">
-                          Same as shipping
-                        </label>
+                  <motion.div
+                    initial={{ opacity: 0, y: 12 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ duration: 0.4, delay: 0.2 }}
+                    className="bg-card p-6 rounded-xl shadow-sm"
+                  >
+                    <h2 className="font-display text-2xl font-bold mb-6 text-card-foreground">Payment Method</h2>
+                    <div
+                      role="radio"
+                      aria-checked="true"
+                      className="flex items-center gap-4 p-4 rounded-lg border-2 border-primary bg-accent/50"
+                    >
+                      <div className="bg-primary/10 p-3 rounded-lg">
+                        <Banknote className="h-6 w-6 text-primary" aria-hidden="true" />
                       </div>
+                      <div className="flex-grow">
+                        <p className="font-semibold text-card-foreground">Cash on Delivery</p>
+                        <p className="text-sm text-muted-foreground">Pay in cash when your order is delivered</p>
+                      </div>
+                      <CheckCircle2 className="h-6 w-6 text-primary shrink-0" aria-hidden="true" />
                     </div>
-                    {!sameAsShipping && (
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <div className="md:col-span-2">
-                          <label htmlFor="billing-fullName" className="block text-sm font-medium mb-2 text-card-foreground">
-                            Full Name
-                          </label>
-                          <Input
-                            id="billing-fullName"
-                            name="fullName"
-                            type="text"
-                            required
-                            value={billingInfo.fullName}
-                            onChange={handleBillingChange}
-                            className="text-foreground"
-                          />
-                        </div>
-                        <div className="md:col-span-2">
-                          <label htmlFor="billing-address" className="block text-sm font-medium mb-2 text-card-foreground">
-                            Address
-                          </label>
-                          <Input
-                            id="billing-address"
-                            name="address"
-                            type="text"
-                            required
-                            value={billingInfo.address}
-                            onChange={handleBillingChange}
-                            className="text-foreground"
-                          />
-                        </div>
-                        <div>
-                          <label htmlFor="billing-city" className="block text-sm font-medium mb-2 text-card-foreground">
-                            City
-                          </label>
-                          <Input
-                            id="billing-city"
-                            name="city"
-                            type="text"
-                            required
-                            value={billingInfo.city}
-                            onChange={handleBillingChange}
-                            className="text-foreground"
-                          />
-                        </div>
-                        <div>
-                          <label htmlFor="billing-state" className="block text-sm font-medium mb-2 text-card-foreground">
-                            State
-                          </label>
-                          <Input
-                            id="billing-state"
-                            name="state"
-                            type="text"
-                            required
-                            value={billingInfo.state}
-                            onChange={handleBillingChange}
-                            className="text-foreground"
-                          />
-                        </div>
-                        <div>
-                          <label htmlFor="billing-zipCode" className="block text-sm font-medium mb-2 text-card-foreground">
-                            ZIP Code
-                          </label>
-                          <Input
-                            id="billing-zipCode"
-                            name="zipCode"
-                            type="text"
-                            required
-                            value={billingInfo.zipCode}
-                            onChange={handleBillingChange}
-                            className="text-foreground"
-                          />
-                        </div>
-                      </div>
-                    )}
-                  </div>
+                  </motion.div>
                 </div>
 
                 <div className="lg:col-span-1">
-                  <div className="bg-card p-6 rounded-xl shadow-sm sticky top-24">
+                  <motion.div
+                    initial={{ opacity: 0, y: 12 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ duration: 0.4, delay: 0.3 }}
+                    className="bg-card p-6 rounded-xl shadow-sm sticky top-24"
+                  >
                     <h2 className="font-display text-2xl font-bold mb-6 text-card-foreground">Order Summary</h2>
                     <div className="space-y-4 mb-6">
-                      {cartItems.map((item) => (
-                        <div key={item.variant.id} className="flex gap-3">
-                          <img
-                            src={item.product.image}
-                            alt={item.product.title}
-                            className="w-16 h-16 object-cover rounded"
-                          />
-                          <div className="flex-grow">
-                            <p className="text-sm font-medium text-card-foreground">{item.product.title}</p>
-                            <p className="text-xs text-muted-foreground">{item.variant.title}</p>
-                            <p className="text-sm font-semibold text-primary">
-                              {item.variant.sale_price_formatted || item.variant.price_formatted} × {item.quantity}
+                      {cartItems.map((item) => {
+                        const unitPrice = item.variant.sale_price_in_cents ?? item.variant.price_in_cents;
+                        return (
+                          <div key={item.variant.id} className="flex gap-3">
+                            <img
+                              src={item.product.image}
+                              alt={item.product.title}
+                              className="w-16 h-16 object-cover rounded"
+                            />
+                            <div className="flex-grow">
+                              <p className="text-sm font-medium text-card-foreground">{item.product.title}</p>
+                              <p className="text-xs text-muted-foreground">{item.variant.title}</p>
+                              <p className="text-sm font-semibold text-primary">
+                                {item.variant.sale_price_formatted || item.variant.price_formatted} × {item.quantity}
+                              </p>
+                            </div>
+                            <p className="text-sm font-semibold text-card-foreground whitespace-nowrap">
+                              {formatCurrency(unitPrice * item.quantity, currencyInfo)}
                             </p>
                           </div>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                     <div className="border-t border-border pt-4 space-y-2 mb-6">
                       <div className="flex justify-between text-card-foreground">
                         <span>Subtotal</span>
-                        <span className="font-semibold">{getCartTotal()}</span>
+                        <span className="font-semibold">{totalFormatted}</span>
+                      </div>
+                      <div className="flex justify-between text-card-foreground">
+                        <span>Payment</span>
+                        <span className="text-muted-foreground">Cash on Delivery</span>
                       </div>
                       <div className="flex justify-between text-lg font-bold text-card-foreground">
                         <span>Total</span>
-                        <span>{getCartTotal()}</span>
+                        <span>{totalFormatted}</span>
                       </div>
                     </div>
                     <Button
                       type="submit"
                       disabled={isProcessing}
-                      className="w-full bg-primary text-primary-foreground hover:bg-primary/90 font-semibold"
+                      className="w-full h-12 bg-primary text-primary-foreground hover:bg-primary/90 font-semibold text-base"
                     >
                       {isProcessing ? (
                         <>
                           <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                          Processing...
+                          Placing Order...
                         </>
                       ) : (
-                        'Place Order'
+                        'Confirm Order'
                       )}
                     </Button>
-                  </div>
+                    <p className="mt-3 text-xs text-center text-muted-foreground">
+                      No advance payment required — pay {totalFormatted} on delivery.
+                    </p>
+                  </motion.div>
                 </div>
               </div>
             </form>
