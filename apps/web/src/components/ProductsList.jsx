@@ -23,7 +23,7 @@ const ProductCard = ({ product, index }) => {
     e.preventDefault();
     e.stopPropagation();
 
-    if (product.variants.length > 1) {
+    if (product.variants.length > 1 || product.sizes?.length > 0) {
       navigate(`/product/${product.id}`);
       return;
     }
@@ -56,6 +56,7 @@ const ProductCard = ({ product, index }) => {
             <img
               src={product.image ||placeholderImage}
               alt={product.title}
+              loading="lazy"
               className="w-full h-64 object-cover transition-transform duration-300"
             />
             <div className="absolute inset-0 bg-black/20 group-hover:bg-black/40 transition-all duration-300" />

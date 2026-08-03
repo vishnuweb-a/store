@@ -125,7 +125,7 @@ const SuccessPage = () => {
                         />
                         <div className="flex-grow">
                           <p className="text-sm font-medium text-card-foreground">{item.title}</p>
-                          <p className="text-xs text-muted-foreground">{item.variant_title}</p>
+                          {item.size && <p className="text-xs text-muted-foreground">Size: {item.size}</p>}
                           <p className="text-sm text-muted-foreground">
                             {item.unit_price_formatted} × {item.quantity}
                           </p>

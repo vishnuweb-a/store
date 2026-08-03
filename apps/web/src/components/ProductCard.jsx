@@ -1,6 +1,6 @@
 import React from 'react';
 import { motion } from 'framer-motion';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { ShoppingCart, Star } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useCart } from '@/hooks/useCart';
@@ -9,7 +9,8 @@ import { useToast } from '@/hooks/use-toast';
 const ProductCard = ({ product, index }) => {
   const { addToCart } = useCart();
   const { toast } = useToast();
- 
+  const navigate = useNavigate();
+
   const displayVariant = product.variants[0];
   const hasSale = displayVariant && displayVariant.sale_price_in_cents !== null;
   const displayPrice = hasSale ? displayVariant.sale_price_formatted : displayVariant.price_formatted;
@@ -18,7 +19,13 @@ const ProductCard = ({ product, index }) => {
   const handleAddToCart = async (e) => {
     e.preventDefault();
     e.stopPropagation();
- 
+
+    // Sized products need a size picked first, so send the shopper to the product page.
+    if (product.sizes?.length > 0) {
+      navigate(`/product/${product.id}`);
+      return;
+    }
+
     try {
       await addToCart(product, displayVariant, 1, displayVariant.inventory_quantity);
       toast({
@@ -47,6 +54,7 @@ const ProductCard = ({ product, index }) => {
             <img
               src={product.image}
               alt={product.title}
+              loading="lazy"
               className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
             />
             {product.ribbon_text && (

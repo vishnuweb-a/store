@@ -1,68 +1,12 @@
-import { formatCurrency, getProductQuantities } from '@/api/EcommerceApi';
+import { supabase } from '@/lib/supabase';
+import { formatCurrency } from '@/api/EcommerceApi';
 
 const ORDERS_STORAGE_KEY = 'e-commerce-orders';
 const MAX_STORED_ORDERS = 20;
 
-// Optional backend endpoint for order submission (e.g. a serverless function
-// or store management webhook). Configured via environment, never hardcoded.
-const ORDERS_ENDPOINT = import.meta.env.VITE_ORDERS_ENDPOINT || '';
-
-const generateOrderNumber = () => {
-  const timestamp = Date.now().toString(36).toUpperCase();
-  const random = Math.random().toString(36).substring(2, 6).toUpperCase();
-  return `FRV-${timestamp}${random}`;
-};
-
 /**
- * Re-checks live inventory via the Hostinger Ecommerce API for every cart
- * variant that manages stock, so a COD order can't be confirmed for items
- * that sold out after they were added to the cart.
- *
- * @param {Array} cartItems - Items from the cart context
- * @throws {Error} When any managed-stock variant has insufficient inventory
- */
-export async function verifyStock(cartItems) {
-  const managedItems = cartItems.filter((item) => item.variant.manage_inventory);
-
-  if (managedItems.length === 0) {
-    return;
-  }
-
-  const productIds = [...new Set(managedItems.map((item) => item.product.id))];
-
-  let variants;
-  try {
-    ({ variants } = await getProductQuantities({
-      fields: 'inventory_quantity',
-      product_ids: productIds,
-    }));
-  } catch (error) {
-    // Inventory read failed — don't block the order on a transient API error;
-    // stock is reconciled by the store owner when fulfilling COD orders.
-    return;
-  }
-
-  const quantityByVariantId = new Map(
-    (variants || []).map((variant) => [variant.id, variant.inventory_quantity]),
-  );
-
-  const outOfStock = managedItems.filter((item) => {
-    const available = quantityByVariantId.get(item.variant.id);
-    return Number.isFinite(available) && item.quantity > available;
-  });
-
-  if (outOfStock.length > 0) {
-    const titles = outOfStock.map((item) => item.product.title).join(', ');
-    throw new Error(`Not enough stock for: ${titles}. Please adjust your cart.`);
-  }
-}
-
-/**
- * Creates a Cash on Delivery order from the current cart.
- *
- * The order is persisted locally (order history for the confirmation page)
- * and, when VITE_ORDERS_ENDPOINT is configured, submitted to the store
- * backend so it appears in order management.
+ * Creates a Cash on Delivery order in Supabase from the current cart.
+ * The order is also cached locally so the confirmation page survives a reload.
  *
  * @param {Object} params
  * @param {{fullName: string, phone: string, address: string, landmark: string}} params.customer
@@ -74,8 +18,6 @@ export async function createCodOrder({ customer, cartItems }) {
     throw new Error('Cannot place an order with an empty cart.');
   }
 
-  await verifyStock(cartItems);
-
   const currencyInfo = cartItems[0].variant.currency_info;
 
   const items = cartItems.map((item) => {
@@ -86,7 +28,8 @@ export async function createCodOrder({ customer, cartItems }) {
       product_id: item.product.id,
       variant_id: item.variant.id,
       title: item.product.title,
-      variant_title: item.variant.title,
+      // Sized items cart their size as the variant title.
+      size: item.variant.title,
       image: item.product.image,
       quantity: item.quantity,
       unit_price_in_cents: unitPriceInCents,
@@ -98,35 +41,41 @@ export async function createCodOrder({ customer, cartItems }) {
 
   const totalInCents = items.reduce((total, item) => total + item.line_total_in_cents, 0);
 
-  const order = {
-    order_number: generateOrderNumber(),
-    created_at: new Date().toISOString(),
-    status: 'processing',
-    payment_method: 'Cash on Delivery',
-    customer: {
-      full_name: customer.fullName.trim(),
+  const { data, error } = await supabase
+    .from('orders')
+    .insert({
+      customer_name: customer.fullName.trim(),
       phone: customer.phone.trim(),
       address: customer.address.trim(),
-      landmark: customer.landmark.trim(),
+      landmark: customer.landmark.trim() || null,
+      payment_method: 'Cash on Delivery',
+      status: 'processing',
+      total: totalInCents / 100,
+      items,
+    })
+    .select()
+    .single();
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  const order = {
+    id: data.id,
+    order_number: `FRV-${String(data.id).padStart(5, '0')}`,
+    created_at: data.created_at,
+    status: data.status,
+    payment_method: data.payment_method,
+    customer: {
+      full_name: data.customer_name,
+      phone: data.phone,
+      address: data.address,
+      landmark: data.landmark || '',
     },
     items,
     total_in_cents: totalInCents,
     total_formatted: formatCurrency(totalInCents, currencyInfo),
   };
-
-  if (ORDERS_ENDPOINT) {
-    const response = await fetch(ORDERS_ENDPOINT, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(order),
-    });
-
-    if (!response.ok) {
-      throw new Error(`Order submission failed: HTTP ${response.status}`);
-    }
-  }
 
   saveOrder(order);
 
@@ -139,8 +88,8 @@ function saveOrder(order) {
     orders.unshift(order);
     localStorage.setItem(ORDERS_STORAGE_KEY, JSON.stringify(orders.slice(0, MAX_STORED_ORDERS)));
   } catch (error) {
-    // Storage unavailable (private mode / quota) — the confirmation page
-    // still receives the order via navigation state.
+    // Storage unavailable (private mode / quota) — the confirmation page still
+    // receives the order via navigation state.
   }
 }
 
@@ -155,4 +104,22 @@ export function getOrders() {
 
 export function getLatestOrder() {
   return getOrders()[0] || null;
+}
+
+/**
+ * Lists all orders for the admin panel.
+ *
+ * @returns {Promise<Object[]>} Rows from public.orders, newest first
+ */
+export async function listOrders() {
+  const { data, error } = await supabase
+    .from('orders')
+    .select('*')
+    .order('created_at', { ascending: false });
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  return data || [];
 }

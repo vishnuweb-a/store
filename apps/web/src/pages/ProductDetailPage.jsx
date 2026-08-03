@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { Helmet } from 'react-helmet';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
@@ -10,6 +10,7 @@ import { ShoppingCart, Loader2, ArrowLeft, CheckCircle, Minus, Plus, XCircle, Ch
 import Header from '@/components/Header';
 import Footer from '@/components/Footer';
 import ShoppingCartDrawer from '@/components/ShoppingCart';
+import SizeSelector from '@/components/SizeSelector';
 const placeholderImage = "data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNDAwIiBoZWlnaHQ9IjMwMCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KICA8cmVjdCB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSIjMzc0MTUxIi8+CiAgPHRleHQgeD0iNTAlIiB5PSI1MCUiIGZvbnQtZmFtaWx5PSJBcmlhbCwgc2Fucy1zZXJpZiIgZm9udC1zaXplPSIxOCIgZmlsbD0iIzlDQTNBRiIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZHk9Ii4zZW0iPk5vIEltYWdlPC90ZXh0Pgo8L3N2Zz4K";
 function ProductDetailPage() {
   const {
@@ -20,6 +21,7 @@ function ProductDetailPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [selectedVariant, setSelectedVariant] = useState(null);
+  const [selectedSize, setSelectedSize] = useState(null);
   const [quantity, setQuantity] = useState(1);
   const [currentImageIndex, setCurrentImageIndex] = useState(0);
   const [isCartOpen, setIsCartOpen] = useState(false);
@@ -29,14 +31,34 @@ function ProductDetailPage() {
   const {
     toast
   } = useToast();
+  const sizes = product?.sizes || [];
+  const selectedSizeEntry = sizes.find(entry => entry.size === selectedSize) || null;
+
+  // Each size is carted as its own variant so quantity and stock stay separate
+  // per size, and the size shows up wherever variant.title is already rendered.
+  const cartVariant = useMemo(() => selectedVariant && selectedSizeEntry ? {
+    ...selectedVariant,
+    id: `${selectedVariant.id}_${selectedSizeEntry.size}`,
+    title: selectedSizeEntry.size,
+    inventory_quantity: selectedSizeEntry.stock,
+    manage_inventory: true
+  } : selectedVariant, [selectedVariant, selectedSizeEntry]);
   const handleAddToCart = useCallback(async () => {
-    if (product && selectedVariant) {
-      const availableQuantity = selectedVariant.inventory_quantity;
+    if (sizes.length > 0 && !selectedSizeEntry) {
+      toast({
+        variant: "destructive",
+        title: "Please choose a size",
+        description: "Select a size before adding this item to your cart."
+      });
+      return;
+    }
+    if (product && cartVariant) {
+      const availableQuantity = cartVariant.inventory_quantity;
       try {
-        await addToCart(product, selectedVariant, quantity, availableQuantity);
+        await addToCart(product, cartVariant, quantity, availableQuantity);
         toast({
           title: "Added to Cart! 🛒",
-          description: `${quantity} x ${product.title} (${selectedVariant.title}) added.`
+          description: `${quantity} x ${product.title} (${cartVariant.title}) added.`
         });
       } catch (error) {
         toast({
@@ -46,7 +68,7 @@ function ProductDetailPage() {
         });
       }
     }
-  }, [product, selectedVariant, quantity, addToCart, toast]);
+  }, [product, cartVariant, sizes.length, selectedSizeEntry, quantity, addToCart, toast]);
   const handleQuantityChange = useCallback(amount => {
     setQuantity(prevQuantity => {
       const newQuantity = prevQuantity + amount;
@@ -99,6 +121,8 @@ function ProductDetailPage() {
           if (productWithQuantities.variants && productWithQuantities.variants.length > 0) {
             setSelectedVariant(productWithQuantities.variants[0]);
           }
+          const firstAvailableSize = (productWithQuantities.sizes || []).find(entry => entry.stock > 0);
+          setSelectedSize(firstAvailableSize ? firstAvailableSize.size : null);
         } catch (quantityError) {
           throw quantityError;
         }
@@ -143,9 +167,10 @@ function ProductDetailPage() {
   }
   const price = selectedVariant?.sale_price_formatted ?? selectedVariant?.price_formatted;
   const originalPrice = selectedVariant?.price_formatted;
-  const availableStock = selectedVariant ? selectedVariant.inventory_quantity : 0;
-  const isStockManaged = selectedVariant?.manage_inventory ?? false;
-  const canAddToCart = !isStockManaged || quantity <= availableStock;
+  const availableStock = cartVariant ? cartVariant.inventory_quantity : 0;
+  const isStockManaged = cartVariant?.manage_inventory ?? false;
+  const hasSizeSelection = sizes.length === 0 || Boolean(selectedSizeEntry);
+  const canAddToCart = hasSizeSelection && (!isStockManaged || quantity <= availableStock);
   const currentImage = product.images[currentImageIndex];
   const hasMultipleImages = product.images.length > 1;
   return <>
@@ -238,6 +263,8 @@ function ProductDetailPage() {
                     </Button>)}
                 </div>
               </div>}
+
+            <SizeSelector sizes={sizes} selectedSize={selectedSize} onSelect={setSelectedSize} />
 
             <div className="flex items-center gap-4 mb-6">
               <div className="flex items-center border border-border rounded-full p-1">

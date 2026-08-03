@@ -12,6 +12,7 @@ import SuccessPage from '@/pages/SuccessPage.jsx';
 import PrivacyPolicyPage from '@/pages/PrivacyPolicyPage.jsx';
 import TermsAndConditionsPage from '@/pages/TermsAndConditionsPage.jsx';
 import RefundPolicyPage from '@/pages/RefundPolicyPage.jsx';
+import AdminPage from '@/pages/AdminPage.jsx';
 import NotFoundPage from '@/pages/NotFoundPage.jsx';
 import { Toaster } from '@/components/ui/sonner.jsx';
 import { Toaster as UIToaster } from '@/components/ui/toaster.jsx';
@@ -32,6 +33,7 @@ function App() {
         <Route path="/privacy" element={<PrivacyPolicyPage />} />
         <Route path="/terms" element={<TermsAndConditionsPage />} />
         <Route path="/refund-policy" element={<RefundPolicyPage />} />
+        <Route path="/admin" element={<AdminPage />} />
         <Route path="*" element={<NotFoundPage />} />
       </Routes>
       <Toaster />
