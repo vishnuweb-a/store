@@ -16,9 +16,22 @@ create table if not exists public.products (
   sizes jsonb not null default '[]'::jsonb,
   image_url text,
   cloudinary_public_id text,
+  -- Storefront collection slug, matching the /shop?category=<slug> links on the
+  -- home page ('mens', 'womens'). Null means the product is uncategorised and
+  -- only shows under "All Products".
+  category text,
   active boolean not null default true,
   created_at timestamptz not null default now()
 );
+
+-- Added after the first release, so existing databases need the column too.
+alter table public.products add column if not exists category text;
+
+create index if not exists products_category_idx on public.products (category);
+
+-- Backfill: every product that predates the column is part of the original
+-- men's shirt catalogue. Scoped to null so it never touches categorised rows.
+update public.products set category = 'mens' where category is null;
 
 create table if not exists public.orders (
   id bigint generated always as identity primary key,

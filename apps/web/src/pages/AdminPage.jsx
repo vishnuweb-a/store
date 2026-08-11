@@ -9,6 +9,13 @@ import { supabase } from '@/lib/supabase';
 import { uploadImage } from '@/lib/cloudinary';
 import { listOrders } from '@/api/OrdersApi';
 
+// Collection slugs the storefront filters on; must match COLLECTIONS in EcommerceApi.
+const CATEGORY_OPTIONS = [
+  { value: '', label: 'Uncategorised' },
+  { value: 'mens', label: "Men's Wear" },
+  { value: 'womens', label: "Women's Wear" },
+];
+
 const EMPTY_PRODUCT = {
   title: '',
   subtitle: '',
@@ -23,6 +30,7 @@ const EMPTY_PRODUCT = {
   sizes: [],
   image_url: '',
   cloudinary_public_id: '',
+  category: '',
   active: true,
 };
 
@@ -83,6 +91,7 @@ const ProductForm = ({ initialProduct, onCancel, onSaved }) => {
         .map((entry) => ({ size: String(entry.size), stock: Number(entry.stock) || 0 })),
       image_url: form.image_url || null,
       cloudinary_public_id: form.cloudinary_public_id || null,
+      category: form.category || null,
       active: form.active,
     };
 
@@ -132,6 +141,19 @@ const ProductForm = ({ initialProduct, onCancel, onSaved }) => {
         <div>
           <label className="block text-sm font-medium mb-2 text-card-foreground" htmlFor="sku">SKU</label>
           <Input id="sku" value={form.sku || ''} onChange={(e) => setField('sku', e.target.value)} />
+        </div>
+        <div>
+          <label className="block text-sm font-medium mb-2 text-card-foreground" htmlFor="category">Collection</label>
+          <select
+            id="category"
+            value={form.category || ''}
+            onChange={(e) => setField('category', e.target.value)}
+            className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-base shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring md:text-sm"
+          >
+            {CATEGORY_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>{option.label}</option>
+            ))}
+          </select>
         </div>
         <div>
           <label className="block text-sm font-medium mb-2 text-card-foreground" htmlFor="price">Price (₹)</label>

@@ -29,6 +29,15 @@ export const formatCurrency = (priceInCents, currencyInfo) => {
 };
 
 /**
+ * Storefront collections, keyed by the products.category slug. The ids match the
+ * /shop?category=<slug> links the home page already renders.
+ */
+const COLLECTIONS = [
+  { id: "mens", title: "Men's Wear" },
+  { id: "womens", title: "Women's Wear" },
+];
+
+/**
  * Normalized size entry stored in the products.sizes JSON column.
  * @typedef {Object} ProductSize
  * @property {string} size - Size label (e.g. "M", "XL")
@@ -59,6 +68,7 @@ const mapProduct = (row) => {
   const price_in_cents = toCents(row.price) ?? 0;
   const sale_price_in_cents = toCents(row.discount_price);
   const sizes = extractSizes(row.sizes);
+  const collection = COLLECTIONS.find((entry) => entry.id === row.category);
 
   // Sized products track stock per size; unsized ones use the row-level stock.
   const totalSizeStock = sizes.reduce((total, entry) => total + entry.stock, 0);
@@ -98,7 +108,9 @@ const mapProduct = (row) => {
     images: [{ url: row.image_url || "", order: 0, type: "image" }],
     options: [],
     variants: [variant],
-    collections: [],
+    collections: collection
+      ? [{ collection_id: collection.id, title: collection.title }]
+      : [],
     additional_info: [],
     type: { value: "" },
     custom_fields: [],
@@ -203,11 +215,25 @@ export async function getProductQuantities({ product_ids }) {
 }
 
 /**
- * Categories are not part of the prototype schema; the shop page falls back to
- * showing every product when this list is empty.
+ * Lists the collections that actually have active products behind them, so the
+ * shop page never renders a filter that would come back empty. The shop page
+ * falls back to showing every product when this list is empty.
  *
  * @returns {Promise<{categories: Object[], count: number}>}
  */
 export async function getCategories() {
-  return { categories: [], count: 0 };
+  const { data, error } = await supabase
+    .from("products")
+    .select("category")
+    .eq("active", true)
+    .not("category", "is", null);
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  const present = new Set((data || []).map((row) => row.category));
+  const categories = COLLECTIONS.filter((collection) => present.has(collection.id));
+
+  return { categories, count: categories.length };
 }
