@@ -1,7 +1,6 @@
 /**
  * The Airpay Response/IPN endpoint: payload parsing, field extraction,
- * integrity checks, duplicate detection, routing, and the guarantee that
- * nothing forwards to kkchat.in.
+ * integrity checks, duplicate detection, and routing.
  */
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -299,33 +298,6 @@ describe('callback route and Vercel configuration', () => {
     assert.match(source, /await settleOrder\(orderRef\)/);
     assert.ok(!/settleOrder\([^)]*payload/.test(source));
     assert.ok(!/settleOrder\([^)]*fields/.test(source));
-  });
-});
-
-describe('no forwarding to kkchat.in', () => {
-  const sources = [
-    '../api/payments/callback.js',
-    '../api/payments/return.js',
-    '../api/payments/create.js',
-    '../api/_lib/config.js',
-    '../api/_lib/callback-payload.js',
-  ].map((relative) => readFileSync(new URL(relative, import.meta.url), 'utf8'));
-
-  test('no payment file contains a kkchat.in URL in executable code', () => {
-    for (const source of sources) {
-      // Strip comment bodies; explanatory comments are allowed, URLs are not.
-      const code = source.replace(/^\s*\*.*$/gm, '').replace(/\/\/.*$/gm, '');
-
-      assert.ok(!/https?:\/\/(www\.)?kkchat\.in/.test(code));
-    }
-  });
-
-  test('the callback handler makes no outbound HTTP request at all', () => {
-    const callback = sources[0];
-
-    assert.ok(!callback.includes('fetchWithTimeout('));
-    assert.ok(!/\bfetch\(/.test(callback));
-    assert.ok(!/\baxios\b/.test(callback));
   });
 });
 

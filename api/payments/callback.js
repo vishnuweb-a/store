@@ -13,7 +13,10 @@
  * mark an order paid: settlement re-verifies with Airpay's Order Confirmation
  * API and compares the confirmed amount against the server-derived order total.
  *
- * There is no forwarding of any kind. Airpay callbacks terminate here.
+ * The received callback is additionally relayed, verbatim and once, to the
+ * client's existing endpoint. That relay is auxiliary: see forwardCallback().
+ * Frontiva's own processing below does not consult it and cannot be affected by
+ * it in any way.
  */
 import {
   dedupeKeyFor,
@@ -24,6 +27,7 @@ import {
 } from '../_lib/callback-payload.js';
 import { airpayConfig, siteOrigin } from '../_lib/config.js';
 import { privateKey } from '../_lib/crypto.js';
+import { forwardCallback } from '../_lib/forward-callback.js';
 import { logEvent, parseBody, readRawBody, redact, redirect } from '../_lib/http.js';
 import { recordCallback, settleOrder } from '../_lib/orders.js';
 
@@ -66,8 +70,17 @@ export default async function handler(req, res) {
   const isBrowser = isBrowserNavigation(req);
   const origin = siteOrigin(req);
 
+  // The auxiliary relay, started as soon as the body is read. Held here so it
+  // can be settled before the response, because a serverless invocation may be
+  // frozen the moment it answers. It never rejects, so awaiting it is safe.
+  let forwarding = Promise.resolve(null);
+
   /** Answers a browser with the existing success page, and Airpay with plain text. */
-  const respond = (statusCode, body, orderRef) => {
+  const respond = async (statusCode, body, orderRef) => {
+    // allSettled, not await, so that even a future change making the relay
+    // throw could not reach the response path.
+    await Promise.allSettled([forwarding]);
+
     if (isBrowser) {
       redirect(res, orderRef ? `${origin}/success?ref=${encodeURIComponent(orderRef)}` : `${origin}/success`);
       return;
@@ -87,6 +100,16 @@ export default async function handler(req, res) {
     const dedupeKey = dedupeKeyFor(raw, payload);
 
     orderRef = fields.orderRef;
+
+    // Relay every received callback, verbatim, before any of our own decisions
+    // are made — so what the client receives is what Airpay sent, regardless of
+    // what Frontiva concludes about it. Runs concurrently with settlement below.
+    forwarding = forwardCallback({
+      raw,
+      contentType: String(req.headers['content-type'] || ''),
+      orderRef,
+      incomingHeaders: req.headers,
+    });
 
     logEvent('payment.callback.received', {
       order_ref: orderRef,
@@ -111,7 +134,7 @@ export default async function handler(req, res) {
 
     if (!orderRef) {
       logEvent('payment.callback.no_order_ref', { source: isBrowser ? 'browser' : 'ipn' });
-      respond(200, 'OK', null);
+      await respond(200, 'OK', null);
       return;
     }
 
@@ -167,7 +190,7 @@ export default async function handler(req, res) {
     }
 
     if (blocked) {
-      respond(200, 'OK', orderRef);
+      await respond(200, 'OK', orderRef);
       return;
     }
 
@@ -182,9 +205,13 @@ export default async function handler(req, res) {
       });
     }
 
-    respond(200, 'OK', orderRef);
+    await respond(200, 'OK', orderRef);
   } catch (error) {
     logEvent('payment.callback.error', { kind: error?.isConfigError ? 'config' : 'unexpected' });
+
+    // Let the relay finish here too, so a failure in our own processing does
+    // not silently drop a callback the client was meant to receive.
+    await Promise.allSettled([forwarding]);
 
     if (isBrowser) {
       // Never strand the customer: the success page shows the real status.
