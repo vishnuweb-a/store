@@ -23,10 +23,23 @@ import { fetchWithTimeout, logEvent, scrubSecrets } from './http.js';
  * request ever reaches the API.
  */
 const AIRPAY_HEADERS = {
-  'Content-Type': 'application/json',
+  // Airpay reads the envelope as POST form fields, not as a JSON document.
+  // Sending JSON produced "403 Forbidden: Access is denied. Parameters are
+  // required." — the fields were present but invisible to the server.
+  'Content-Type': 'application/x-www-form-urlencoded',
   Accept: 'application/json',
   'User-Agent': 'Frontiva/1.0 (+https://frontiva.online)',
 };
+
+/**
+ * Encodes a request envelope the way Airpay expects to receive it.
+ *
+ * @param {Record<string, string>} envelope
+ * @returns {string}
+ */
+function encodeEnvelope(envelope) {
+  return new URLSearchParams(envelope).toString();
+}
 
 /**
  * Airpay's Order Confirmation endpoint. Overridable because merchants can be
@@ -198,7 +211,7 @@ export async function getAccessToken() {
     {
       method: 'POST',
       headers: AIRPAY_HEADERS,
-      body: JSON.stringify(buildEnvelope(fields, config)),
+      body: encodeEnvelope(buildEnvelope(fields, config)),
     },
     AIRPAY_TIMEOUT_MS,
   );
@@ -326,7 +339,7 @@ export async function confirmOrder(orderRef) {
       {
         method: 'POST',
         headers: AIRPAY_HEADERS,
-        body: JSON.stringify(buildSignedEnvelope({ merchant_id: config.mid, orderid: orderRef }, config)),
+        body: encodeEnvelope(buildSignedEnvelope({ merchant_id: config.mid, orderid: orderRef }, config)),
       },
       AIRPAY_TIMEOUT_MS,
     );

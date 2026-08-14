@@ -47,7 +47,10 @@ function stubFetch(response) {
   const calls = [];
 
   globalThis.fetch = async (url, options) => {
-    calls.push({ url, options, body: JSON.parse(options.body) });
+    // Airpay receives a form-encoded envelope; decode it back for assertions.
+    const body = Object.fromEntries(new URLSearchParams(options.body));
+
+    calls.push({ url, options, body });
 
     return {
       ok: response.ok ?? true,
@@ -328,5 +331,41 @@ describe('upstream failure diagnostics', () => {
     );
 
     assert.ok(error.detail.length < 400);
+  });
+});
+
+describe('request encoding', () => {
+  test('posts the envelope form-encoded, not as JSON', async () => {
+    const calls = stubFetch({ text: JSON.stringify({ access_token: 'tok', expires_in: 60 }) });
+
+    await getAccessToken();
+
+    // Airpay reads these as POST form fields; JSON produced
+    // "403 Forbidden: Access is denied. Parameters are required."
+    assert.equal(calls[0].options.headers['Content-Type'], 'application/x-www-form-urlencoded');
+    assert.ok(!calls[0].options.body.startsWith('{'));
+    assert.match(calls[0].options.body, /^merchant_id=/);
+  });
+
+  test('the form body still carries all three envelope fields', async () => {
+    const calls = stubFetch({ text: JSON.stringify({ access_token: 'tok' }) });
+
+    await getAccessToken();
+
+    assert.deepEqual(Object.keys(calls[0].body).sort(), ['checksum', 'encdata', 'merchant_id']);
+  });
+
+  test('encdata survives form encoding intact', async () => {
+    const calls = stubFetch({ text: JSON.stringify({ access_token: 'tok' }) });
+
+    await getAccessToken();
+
+    // base64 contains + / = which must round-trip through the encoding.
+    assert.deepEqual(JSON.parse(decrypt(calls[0].body.encdata, KEY)), {
+      client_id: 'client-id',
+      client_secret: 'client-secret',
+      merchant_id: '123456',
+      grant_type: 'client_credentials',
+    });
   });
 });
