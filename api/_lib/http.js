@@ -4,8 +4,16 @@
  */
 import { timingSafeEqual } from './crypto.js';
 
-/** Body fields that must never reach a log line or an API response. */
+/**
+ * Body fields that must never reach a log line, an API response, or the
+ * payment_events audit row.
+ *
+ * The unpunctuated spellings are not duplicates: a real Airpay IPN sends
+ * CUSTOMERPHONE / CUSTOMEREMAIL / CUSTOMERVPA with no separator, and the
+ * punctuated forms alone let live customer PII through.
+ */
 const SENSITIVE_KEYS = new Set([
+  // Credentials and request signing material.
   'encdata',
   'checksum',
   'privatekey',
@@ -15,14 +23,23 @@ const SENSITIVE_KEYS = new Set([
   'password',
   'access_token',
   'token',
+  // Instrument details.
   'card',
   'cardnumber',
   'card_number',
   'cvv',
+  // Customer PII, in both the punctuated and Airpay's unpunctuated spellings.
+  'customer',
   'customer_phone',
+  'customerphone',
   'customer_email',
+  'customeremail',
+  'customer_vpa',
+  'customervpa',
+  'customer_name',
   'phone',
   'email',
+  'vpa',
 ]);
 
 /**

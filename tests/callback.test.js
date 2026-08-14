@@ -371,3 +371,97 @@ describe('order creation ordering', () => {
     assert.ok(create.indexOf('priceOrder(') < create.indexOf('getAccessToken()'));
   });
 });
+
+describe('a real Airpay IPN', () => {
+  // Field names taken verbatim from a production IPN delivered to
+  // /callback/cpm/arp/collection on 2026-08-14T14:21:03Z.
+  const REAL_IPN = {
+    TRANSACTIONPAYMENTSTATUS: 'SUCCESS',
+    MERCID: '366751',
+    CHARGE_TYPE: '1',
+    TRANSACTIONID: 'FRVMFA1B2C3D4E5F6',
+    APTRANSACTIONID: '250814000123456',
+    TXN_MODE: 'UPI',
+    CHMOD: 'upi',
+    AMOUNT: '1500.00',
+    CURRENCYCODE: '356',
+    TRANSACTIONSTATUS: '200',
+    MESSAGE: 'Transaction Successful',
+    CUSTOMER: 'Asha Menon',
+    CUSTOMERPHONE: '9876543210',
+    CUSTOMEREMAIL: 'orders@frontiva.online',
+    TRANSACTIONTYPE: 'SALE',
+    RISK: 'GREEN',
+    IPNID: '987654',
+    CUSTOMVAR: 'FRVMFA1B2C3D4E5F6',
+    TOKEN: 'tok',
+    UID: 'uid',
+    TRANSACTIONTIME: '2026-08-14 19:51:03',
+    BILLEDAMOUNT: '1500.00',
+    RRN: '523612345678',
+    MERCHANT_NAME: 'FRONTIVA',
+    CARDTYPE: 'UPI',
+    CUSTOMERVPA: 'someone@upi',
+    ap_SecureHash: 'abc123',
+    CHECKOUT_TRANSACTION: '1',
+  };
+
+  test('every field we rely on is extracted from the real payload', () => {
+    const fields = extractCallbackFields(REAL_IPN);
+
+    assert.equal(fields.merchantId, '366751', 'MERCID');
+    assert.equal(fields.orderRef, 'FRVMFA1B2C3D4E5F6', 'CUSTOMVAR');
+    assert.equal(fields.amount, '1500.00', 'AMOUNT');
+    assert.equal(fields.transactionStatus, '200', 'TRANSACTIONSTATUS');
+    assert.equal(fields.paymentStatus, 'SUCCESS', 'TRANSACTIONPAYMENTSTATUS');
+    assert.equal(fields.message, 'Transaction Successful', 'MESSAGE');
+    assert.equal(fields.secureHash, 'abc123', 'ap_SecureHash');
+    assert.equal(fields.customerVpa, 'someone@upi', 'CUSTOMERVPA');
+  });
+
+  test("uses Airpay's own id as the transaction id, not the merchant's", () => {
+    // APTRANSACTIONID is Airpay's; TRANSACTIONID is ours.
+    assert.equal(extractCallbackFields(REAL_IPN).transactionId, '250814000123456');
+  });
+
+  test('recovers the order reference from TRANSACTIONID when CUSTOMVAR is absent', () => {
+    const { CUSTOMVAR, ...withoutCustomvar } = REAL_IPN;
+
+    assert.equal(extractOrderRef(withoutCustomvar), 'FRVMFA1B2C3D4E5F6');
+  });
+
+  test("never mistakes Airpay's numeric transaction id for an order reference", () => {
+    const { CUSTOMVAR, TRANSACTIONID, ...rest } = REAL_IPN;
+
+    // APTRANSACTIONID is long and alphanumeric enough to have passed a looser
+    // gate; the FRV prefix is what rules it out.
+    assert.equal(extractOrderRef(rest), null);
+  });
+
+  test('the merchant id matches our configured MID', () => {
+    assert.equal(verifyMerchantId(extractCallbackFields(REAL_IPN), MID), 'match');
+  });
+
+  test('the status classifies as a successful transaction', () => {
+    assert.equal(extractCallbackFields(REAL_IPN).transactionStatus, '200');
+  });
+
+  test('a redelivery of the same IPN dedupes', () => {
+    assert.equal(dedupeKeyFor('raw', REAL_IPN), dedupeKeyFor('raw', { ...REAL_IPN, IPNID: '999' }));
+  });
+
+  test('contact details are redacted before storage', () => {
+    const stored = redact(REAL_IPN);
+
+    // Airpay's unpunctuated spellings must be caught, not just customer_phone.
+    assert.equal(stored.CUSTOMERPHONE, '[redacted]');
+    assert.equal(stored.CUSTOMEREMAIL, '[redacted]');
+    assert.equal(stored.CUSTOMERVPA, '[redacted]');
+    assert.equal(stored.CUSTOMER, '[redacted]');
+
+    // Audit value is retained.
+    assert.equal(stored.TRANSACTIONSTATUS, '200');
+    assert.equal(stored.AMOUNT, '1500.00');
+    assert.equal(stored.APTRANSACTIONID, '250814000123456');
+  });
+});

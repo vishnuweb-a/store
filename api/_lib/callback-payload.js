@@ -57,18 +57,29 @@ export function extractCallbackFields(payload) {
 }
 
 /**
- * Finds the merchant order reference. `customvar` is the field we set when
- * creating the payment; the others are accepted as fallbacks.
+ * The shape newOrderRef() generates. Requiring the FRV prefix — rather than
+ * just an alphanumeric run — means a foreign identifier such as Airpay's own
+ * numeric transaction id can never be mistaken for one of our references.
+ */
+const ORDER_REF_PATTERN = /^FRV[A-Z0-9]{5,61}$/;
+
+/**
+ * Finds the merchant order reference.
+ *
+ * Confirmed against a real Airpay IPN: our reference comes back in both
+ * CUSTOMVAR (which we set) and TRANSACTIONID (Airpay's name for the merchant's
+ * own order id — APTRANSACTIONID is Airpay's id, and is deliberately not used
+ * here). The others are accepted as fallbacks.
  *
  * The format gate is a security control, not a convenience: this value flows
- * into a PostgREST filter, so anything outside the generated reference alphabet
+ * into a PostgREST filter, so anything outside the generated reference format
  * is rejected outright.
  *
  * @param {Record<string, unknown>} payload
  * @returns {string|null}
  */
 export function extractOrderRef(payload) {
-  const value = pick(payload, ['customvar', 'orderid', 'order_id', 'merchant_order_id']);
+  const value = pick(payload, ['customvar', 'transactionid', 'orderid', 'order_id', 'merchant_order_id']);
 
   if (typeof value !== 'string') {
     return null;
@@ -76,7 +87,7 @@ export function extractOrderRef(payload) {
 
   const trimmed = value.trim();
 
-  return /^[A-Z0-9]{8,64}$/.test(trimmed) ? trimmed : null;
+  return ORDER_REF_PATTERN.test(trimmed) ? trimmed : null;
 }
 
 /**

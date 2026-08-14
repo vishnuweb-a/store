@@ -71,8 +71,8 @@ export async function findOrderByRef(orderRef) {
   const ref = String(orderRef || '').trim();
 
   // Format-gated before it reaches a PostgREST filter, so a hostile reference
-  // from a callback body cannot alter the query.
-  if (!/^[A-Z0-9]{8,64}$/.test(ref)) {
+  // from a callback body cannot alter the query. Matches newOrderRef().
+  if (!/^FRV[A-Z0-9]{5,61}$/.test(ref)) {
     return null;
   }
 
