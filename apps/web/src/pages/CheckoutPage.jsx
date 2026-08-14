@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Helmet } from 'react-helmet';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
@@ -33,7 +33,7 @@ const CheckoutPage = () => {
   const [isCartOpen, setIsCartOpen] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState('cod');
-  const [staleItems, setStaleItems] = useState([]);
+  const [rejectedItems, setRejectedItems] = useState([]);
   const [errors, setErrors] = useState({});
   const orderPlacedRef = useRef(false);
   const { cartItems, clearCart, removeFromCart } = useCart();
@@ -59,6 +59,19 @@ const CheckoutPage = () => {
     return total + price * item.quantity;
   }, 0);
   const totalFormatted = formatCurrency(totalInCents, currencyInfo);
+  // Cart lines the server will not be able to price, detected up front rather
+  // than only after a failed payment attempt. A cart saved before the catalogue
+  // moved to Supabase still holds the old catalogue's opaque product ids, and
+  // those can never resolve to a product.
+  const unpriceableItems = useMemo(
+    () => cartItems.filter((item) => !/^\d+$/.test(String(item?.product?.id ?? '').trim())),
+    [cartItems],
+  );
+
+  // The server's verdict wins when we have it; otherwise fall back to the
+  // local check, so the warning appears on page load.
+  const staleItems = rejectedItems.length > 0 ? rejectedItems : unpriceableItems;
+
   const isOnline = paymentMethod === 'online';
   const selectedMethod = PAYMENT_METHODS.find((method) => method.id === paymentMethod) ?? PAYMENT_METHODS[0];
 
@@ -125,7 +138,7 @@ const CheckoutPage = () => {
         // priced. Name them and offer to drop them, rather than leaving the
         // customer stuck on a generic failure with no way forward.
         if (error.invalidItems?.length > 0) {
-          setStaleItems(error.invalidItems);
+          setRejectedItems(error.invalidItems);
         }
 
         toast({
@@ -299,7 +312,7 @@ const CheckoutPage = () => {
                           variant="outline"
                           onClick={() => {
                             staleItems.forEach((item) => removeFromCart(item.variant.id));
-                            setStaleItems([]);
+                            setRejectedItems([]);
                           }}
                         >
                           Remove outdated items
