@@ -113,6 +113,34 @@ export function redact(payload) {
 }
 
 /**
+ * Scrubs any configured credential value out of free text, so an upstream error
+ * body can be logged without risking echoing a secret back into the logs.
+ *
+ * @param {string} text
+ * @param {number} [limit] - Truncate to this many characters
+ * @returns {string}
+ */
+export function scrubSecrets(text, limit = 300) {
+  let output = String(text || '').slice(0, limit);
+
+  const secrets = [
+    process.env.AIRPAY_SECRET_KEY,
+    process.env.AIRPAY_API_KEY,
+    process.env.AIRPAY_PASSWORD,
+    process.env.AIRPAY_USERNAME,
+    process.env.AIRPAY_CLIENT_ID,
+    process.env.SUPABASE_SERVICE_ROLE,
+    process.env.CRON_SECRET,
+  ].filter((value) => value && String(value).length >= 4);
+
+  for (const secret of secrets) {
+    output = output.split(String(secret)).join('[redacted]');
+  }
+
+  return output;
+}
+
+/**
  * Structured server-side log. Callers pass already-safe fields; anything that
  * looks sensitive is redacted again here as a backstop.
  *

@@ -80,14 +80,19 @@ export default async function handler(req, res) {
 
     // Airpay/database failures: log a safe diagnostic, tell the customer
     // nothing about our internals, and leave any pending order un-paid.
+    const kind = error?.isAirpayError ? 'airpay' : error?.isDatabaseError ? 'database' : 'unexpected';
+
     logEvent('payment.create.failed', {
       order_ref: orderRef,
-      kind: error?.isAirpayError ? 'airpay' : error?.isDatabaseError ? 'database' : 'unexpected',
-      detail: error?.isAirpayError ? error.detail : undefined,
+      kind,
+      detail: error?.isAirpayError ? error.detail : error?.message,
     });
 
     json(res, 502, {
       error: 'We could not start the online payment. Please try again, or choose Cash on Delivery.',
+      // Which subsystem failed, so a failure can be triaged without log access.
+      // A category name, never a message, a credential, or a stack trace.
+      code: kind,
     });
   }
 }

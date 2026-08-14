@@ -13,7 +13,20 @@ import {
   airpayConfig,
 } from './config.js';
 import { checksum, decrypt, encrypt, encryptionKey, privateKey } from './crypto.js';
-import { fetchWithTimeout, logEvent } from './http.js';
+import { fetchWithTimeout, logEvent, scrubSecrets } from './http.js';
+
+/**
+ * Headers sent on every Airpay call.
+ *
+ * The explicit User-Agent matters: Node's fetch sends none by default, and
+ * WAFs commonly reject an anonymous client outright with a 403 before the
+ * request ever reaches the API.
+ */
+const AIRPAY_HEADERS = {
+  'Content-Type': 'application/json',
+  Accept: 'application/json',
+  'User-Agent': 'Frontiva/1.0 (+https://frontiva.online)',
+};
 
 /**
  * Airpay's Order Confirmation endpoint. Overridable because merchants can be
@@ -184,7 +197,7 @@ export async function getAccessToken() {
     AIRPAY_OAUTH_URL,
     {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      headers: AIRPAY_HEADERS,
       body: JSON.stringify(buildEnvelope(fields, config)),
     },
     AIRPAY_TIMEOUT_MS,
@@ -193,8 +206,18 @@ export async function getAccessToken() {
   const text = await response.text();
 
   if (!response.ok) {
-    logEvent('airpay.oauth.http_error', { status: response.status });
-    throw new AirpayError('Airpay authentication failed', `http ${response.status}`);
+    // The body distinguishes causes that all surface as the same status code:
+    // a WAF block page, an IP-whitelisting rejection, an unregistered domain,
+    // or a genuine credential error. Scrubbed and truncated before logging.
+    const snippet = scrubSecrets(text);
+
+    logEvent('airpay.oauth.http_error', {
+      status: response.status,
+      content_type: response.headers?.get?.('content-type') ?? null,
+      body: snippet,
+    });
+
+    throw new AirpayError('Airpay authentication failed', `http ${response.status}: ${snippet}`);
   }
 
   const payload = parseAirpayResponse(text, key);
@@ -302,7 +325,7 @@ export async function confirmOrder(orderRef) {
       `${verifyUrl()}?token=${encodeURIComponent(accessToken)}`,
       {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        headers: AIRPAY_HEADERS,
         body: JSON.stringify(buildSignedEnvelope({ merchant_id: config.mid, orderid: orderRef }, config)),
       },
       AIRPAY_TIMEOUT_MS,

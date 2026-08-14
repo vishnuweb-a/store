@@ -52,6 +52,7 @@ function stubFetch(response) {
     return {
       ok: response.ok ?? true,
       status: response.status ?? 200,
+      headers: { get: (name) => (name.toLowerCase() === 'content-type' ? 'application/json' : null) },
       text: async () => response.text,
     };
   };
@@ -278,5 +279,54 @@ describe('getAccessToken', () => {
 
     assert.equal(error.isConfigError, true);
     assert.match(error.message, /AIRPAY_SECRET_KEY/);
+  });
+});
+
+describe('upstream failure diagnostics', () => {
+  test('sends a User-Agent, since WAFs 403 anonymous clients', async () => {
+    const calls = stubFetch({ text: JSON.stringify({ access_token: 'tok', expires_in: 60 }) });
+
+    await getAccessToken();
+
+    assert.ok(calls[0].options.headers['User-Agent']);
+  });
+
+  test('captures the response body on a non-2xx so the cause is identifiable', async () => {
+    stubFetch({ ok: false, status: 403, text: '<html>Access Denied: IP not whitelisted</html>' });
+
+    const error = await getAccessToken().then(
+      () => null,
+      (caught) => caught,
+    );
+
+    assert.match(error.detail, /http 403/);
+    assert.match(error.detail, /IP not whitelisted/);
+  });
+
+  test('scrubs credentials out of a body that echoes them back', async () => {
+    stubFetch({ ok: false, status: 403, text: `denied for client-secret and api-key` });
+
+    const error = await getAccessToken().then(
+      () => null,
+      (caught) => caught,
+    );
+
+    for (const secret of Object.values(ENV)) {
+      if (secret === 'live') continue;
+      assert.ok(!error.detail.includes(secret), `detail leaked ${secret}`);
+    }
+
+    assert.match(error.detail, /\[redacted\]/);
+  });
+
+  test('truncates a large body rather than logging all of it', async () => {
+    stubFetch({ ok: false, status: 502, text: 'x'.repeat(50_000) });
+
+    const error = await getAccessToken().then(
+      () => null,
+      (caught) => caught,
+    );
+
+    assert.ok(error.detail.length < 400);
   });
 });
