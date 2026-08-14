@@ -150,8 +150,11 @@ export default async function handler(req, res) {
     // prevent it, because unwrapEnvelope() and extractCallbackFields() are
     // total functions that never throw. A null order_ref does not gate it.
     forwarding = forwardCallback({
+      // The payload exactly as Airpay sent it, before any unwrapping: an
+      // enveloped callback is relayed still enveloped, matching the auth
+      // request's data format.
+      payload: received,
       raw,
-      contentType: String(req.headers['content-type'] || ''),
       orderRef,
       incomingHeaders: req.headers,
     });

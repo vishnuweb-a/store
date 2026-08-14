@@ -22,6 +22,9 @@ const RAW_BODY =
   '&MESSAGE=Transaction+Successful&CUSTOMVAR=FRVMFA1B2C3D4E5F6' +
   '&ap_SecureHash=abc123&CUSTOMERVPA=someone%40upi';
 
+/** The same callback as the parsed object the relay forwards. */
+const PAYLOAD = Object.fromEntries(new URLSearchParams(RAW_BODY));
+
 let originalFetch;
 let originalEnv;
 
@@ -67,8 +70,8 @@ function mockClient(behaviour) {
 
 const forward = (overrides = {}) =>
   forwardCallback({
+    payload: PAYLOAD,
     raw: RAW_BODY,
-    contentType: 'application/x-www-form-urlencoded',
     orderRef: 'FRVMFA1B2C3D4E5F6',
     incomingHeaders: {},
     ...overrides,
@@ -98,68 +101,79 @@ describe('destination', () => {
   });
 });
 
-describe('payload fidelity', () => {
-  test('forwards the original body byte for byte', async () => {
+describe('payload fidelity (JSON only, per the client contract)', () => {
+  test('sends application/json, never form encoding', async () => {
     const calls = mockClient({ status: 200 });
 
     await forward();
 
-    assert.equal(calls[0].options.body, RAW_BODY);
+    assert.equal(calls[0].options.headers['Content-Type'], 'application/json');
   });
 
-  test('does not re-encrypt, re-serialise or transform the payload', async () => {
+  test('the body is a JSON object, not a string', async () => {
     const calls = mockClient({ status: 200 });
 
     await forward();
 
-    const body = calls[0].options.body;
+    const parsed = JSON.parse(calls[0].options.body);
 
-    // Every field Airpay sent arrives with its original name and value.
-    for (const field of [
-      'TRANSACTIONPAYMENTSTATUS=SUCCESS',
-      'MERCID=366751',
-      'TRANSACTIONID=FRVMFA1B2C3D4E5F6',
-      'APTRANSACTIONID=250814000123456',
-      'AMOUNT=1500.00',
-      'TRANSACTIONSTATUS=200',
-      'CUSTOMVAR=FRVMFA1B2C3D4E5F6',
-      'ap_SecureHash=abc123',
-    ]) {
-      assert.ok(body.includes(field), `missing ${field}`);
-    }
+    assert.equal(typeof parsed, 'object');
+    assert.ok(!Array.isArray(parsed));
+    // Not a JSON-encoded string, and not a urlencoded string.
+    assert.notEqual(typeof parsed, 'string');
+    assert.ok(!calls[0].options.body.startsWith('"'));
+    assert.ok(!calls[0].options.body.includes('&'));
+  });
 
-    // No encryption envelope of our own was wrapped around it.
-    assert.ok(!body.includes('encdata'));
-    assert.ok(!body.includes('privatekey'));
+  test('every field keeps its original name and value', async () => {
+    const calls = mockClient({ status: 200 });
+
+    await forward();
+
+    assert.deepEqual(JSON.parse(calls[0].options.body), PAYLOAD);
+  });
+
+  test('an enveloped callback keeps the auth-style envelope shape', async () => {
+    const calls = mockClient({ status: 200 });
+    const envelope = { merchant_id: '366751', response: '9e7134976bc435d1Wv/xzufpQa7rZ8QWb36' };
+
+    await forward({ payload: envelope, orderRef: null });
+
+    // Same shape as the auth request envelope: an object keyed by field name.
+    assert.deepEqual(JSON.parse(calls[0].options.body), envelope);
+  });
+
+  test('does not re-encrypt or wrap the payload in an envelope of our own', async () => {
+    const calls = mockClient({ status: 200 });
+
+    await forward();
+
+    const parsed = JSON.parse(calls[0].options.body);
+
+    assert.equal(parsed.encdata, undefined);
+    assert.equal(parsed.privatekey, undefined);
+    assert.equal(parsed.checksum, undefined);
   });
 
   test('forwards fields Frontiva itself never uses', async () => {
-    const extended = `${RAW_BODY}&RRN=523612345678&CARDTYPE=UPI&IPNID=987654&UNKNOWN_FUTURE=x`;
     const calls = mockClient({ status: 200 });
+    const extended = { ...PAYLOAD, RRN: '523612345678', CARDTYPE: 'UPI', UNKNOWN_FUTURE: 'x' };
 
-    await forward({ raw: extended });
+    await forward({ payload: extended });
 
-    for (const field of ['RRN=523612345678', 'CARDTYPE=UPI', 'IPNID=987654', 'UNKNOWN_FUTURE=x']) {
-      assert.ok(calls[0].options.body.includes(field), `missing ${field}`);
-    }
+    const parsed = JSON.parse(calls[0].options.body);
+
+    assert.equal(parsed.RRN, '523612345678');
+    assert.equal(parsed.CARDTYPE, 'UPI');
+    assert.equal(parsed.UNKNOWN_FUTURE, 'x');
   });
 
-  test('mirrors a form-encoded content type', async () => {
+  test('an empty payload still produces valid JSON', async () => {
     const calls = mockClient({ status: 200 });
 
-    await forward();
+    await forward({ payload: undefined });
 
-    assert.equal(calls[0].options.headers['Content-Type'], 'application/x-www-form-urlencoded');
-  });
-
-  test('relays a JSON callback as JSON', async () => {
-    const calls = mockClient({ status: 200 });
-    const json = '{"CUSTOMVAR":"FRVMFA1B2C3D4E5F6","TRANSACTIONSTATUS":"200"}';
-
-    await forward({ raw: json, contentType: 'application/json' });
-
-    assert.equal(calls[0].options.headers['Content-Type'], 'application/json');
-    assert.equal(calls[0].options.body, json);
+    assert.deepEqual(JSON.parse(calls[0].options.body), {});
   });
 });
 
@@ -396,13 +410,13 @@ describe('forwarding is independent of parsing', () => {
     assert.equal(result.forwarded, true);
   });
 
-  test('an undecodable body is still forwarded verbatim', async () => {
+  test('an undecodable envelope is still forwarded, fields intact', async () => {
     const calls = mockClient({ status: 200 });
-    const envelope = 'merchant_id=366751&response=9e7134976bc435d1Wv%2FxzufpQa7rZ8QWb36cHH6tTmAnn';
+    const envelope = { merchant_id: '366751', response: '9e7134976bc435d1Wv/xzufpQa7rZ8QWb36' };
 
-    await forward({ raw: envelope, orderRef: null });
+    await forward({ payload: envelope, orderRef: null });
 
-    assert.equal(calls[0].options.body, envelope);
+    assert.deepEqual(JSON.parse(calls[0].options.body), envelope);
   });
 
   test('parsing helpers used before the relay are total functions', () => {

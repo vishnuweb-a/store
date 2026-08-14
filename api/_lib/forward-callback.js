@@ -40,13 +40,13 @@ export const LOOP_GUARD_HEADER = 'x-frontiva-forwarded';
  * IPNs on its own schedule, and retrying here would multiply that traffic.
  *
  * @param {Object} params
- * @param {string} params.raw - The original request body, forwarded verbatim
- * @param {string} [params.contentType] - The incoming Content-Type, mirrored
+ * @param {Record<string, unknown>} params.payload - The received callback fields
+ * @param {string} [params.raw] - Original body, used only to report byte length
  * @param {string|null} [params.orderRef] - For logging only
  * @param {Record<string, unknown>} [params.incomingHeaders] - To detect a loop
  * @returns {Promise<{forwarded: boolean, status: number|null, reason?: string}>}
  */
-export async function forwardCallback({ raw, contentType, orderRef = null, incomingHeaders = {} }) {
+export async function forwardCallback({ payload, raw = '', orderRef = null, incomingHeaders = {} }) {
   if (incomingHeaders?.[LOOP_GUARD_HEADER]) {
     // This delivery came from our own relay. Do not forward it again.
     logEvent('airpay.callback.forward.skipped', { order_ref: orderRef, reason: 'loop guard' });
@@ -74,17 +74,22 @@ export async function forwardCallback({ raw, contentType, orderRef = null, incom
       {
         method: 'POST',
         headers: {
-          // Mirror what Airpay sent, so the client receives the payload in the
-          // encoding it already expects. Real Airpay IPNs are form-encoded; a
-          // JSON callback is relayed as JSON.
-          'Content-Type': contentType || 'application/x-www-form-urlencoded',
-          Accept: '*/*',
+          // JSON only, per the client's integration requirement. Airpay
+          // delivers the callback form-encoded, so it is re-encoded here rather
+          // than mirrored.
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
           'User-Agent': 'Frontiva/1.0 (+https://frontiva.online)',
           [LOOP_GUARD_HEADER]: '1',
         },
-        // Verbatim. Not re-encrypted, not re-serialised, no fields added,
-        // renamed, dropped or transformed.
-        body: String(raw ?? ''),
+        // A JSON object, not a string: the same shape as the auth request
+        // envelope ({merchant_id, encdata, checksum}), so an enveloped callback
+        // arrives as {"merchant_id": "...", "response": "..."}.
+        //
+        // The fields are Airpay's own, passed through untouched: no key is
+        // renamed, no value is re-encrypted or re-typed, nothing is added or
+        // dropped. Only the transport encoding changes.
+        body: JSON.stringify(payload ?? {}),
       },
       FORWARD_TIMEOUT_MS,
     );
