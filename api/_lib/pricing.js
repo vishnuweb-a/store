@@ -13,10 +13,18 @@ import { MAX_LINES, MAX_LINE_QUANTITY } from './config.js';
 import { select } from './supabase.js';
 
 class ValidationError extends Error {
-  constructor(message) {
+  /**
+   * @param {string} message - Customer-safe message
+   * @param {number[]} [invalidIndexes] - Cart line positions the client should act on
+   */
+  constructor(message, invalidIndexes) {
     super(message);
     this.name = 'ValidationError';
     this.isValidationError = true;
+
+    if (invalidIndexes?.length) {
+      this.invalidIndexes = invalidIndexes;
+    }
   }
 }
 
@@ -43,13 +51,26 @@ export function normalizeItems(rawItems) {
     throw new ValidationError('Too many items in one order.');
   }
 
+  // Cart lines whose product id is not a Supabase id at all. This happens to
+  // carts saved before the catalogue moved to Supabase: the storage key never
+  // changed, so a browser can still hold items keyed by the old catalogue's
+  // opaque ids. Those lines can never be priced, so they are reported back by
+  // position and the checkout offers to remove them.
+  const unrecognised = rawItems
+    .map((item, index) => ({ index, productId: String(item?.product_id ?? '').trim() }))
+    .filter(({ productId }) => !/^\d+$/.test(productId));
+
+  if (unrecognised.length > 0) {
+    // One message for every cause — a stale cart and a tampered id are
+    // indistinguishable here, and the checkout panel supplies the explanation.
+    throw new ValidationError(
+      'Your cart contains an item we could not recognise.',
+      unrecognised.map(({ index }) => index),
+    );
+  }
+
   return rawItems.map((item) => {
-    const productId = String(item?.product_id ?? '').trim();
-
-    if (!/^\d+$/.test(productId)) {
-      throw new ValidationError('Your cart contains an item we could not recognise.');
-    }
-
+    const productId = String(item.product_id).trim();
     const quantity = Number(item?.quantity);
 
     if (!Number.isInteger(quantity) || quantity < 1 || quantity > MAX_LINE_QUANTITY) {

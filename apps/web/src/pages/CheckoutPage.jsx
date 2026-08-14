@@ -33,9 +33,10 @@ const CheckoutPage = () => {
   const [isCartOpen, setIsCartOpen] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState('cod');
+  const [staleItems, setStaleItems] = useState([]);
   const [errors, setErrors] = useState({});
   const orderPlacedRef = useRef(false);
-  const { cartItems, clearCart } = useCart();
+  const { cartItems, clearCart, removeFromCart } = useCart();
   const { toast } = useToast();
   const navigate = useNavigate();
 
@@ -120,6 +121,13 @@ const CheckoutPage = () => {
         // /success clears it once the payment is confirmed.
         submitPayment(payment);
       } catch (error) {
+        // Cart lines saved before the catalogue moved to Supabase can never be
+        // priced. Name them and offer to drop them, rather than leaving the
+        // customer stuck on a generic failure with no way forward.
+        if (error.invalidItems?.length > 0) {
+          setStaleItems(error.invalidItems);
+        }
+
         toast({
           title: 'Could not start online payment',
           description:
@@ -272,6 +280,32 @@ const CheckoutPage = () => {
                     className="bg-card p-6 rounded-xl shadow-sm"
                   >
                     <h2 className="font-display text-2xl font-bold mb-6 text-card-foreground">Payment Method</h2>
+                    {staleItems.length > 0 && (
+                      <div
+                        role="alert"
+                        className="mb-4 p-4 rounded-lg border-2 border-destructive/40 bg-destructive/5"
+                      >
+                        <p className="font-semibold text-card-foreground mb-1">
+                          Some items in your cart are out of date
+                        </p>
+                        <p className="text-sm text-muted-foreground mb-3">
+                          {staleItems.map((item) => item.product.title).join(', ')}
+                          {' — '}
+                          saved before our catalogue was updated, so they can no longer be priced.
+                          Remove them to continue, then add them again from the shop.
+                        </p>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={() => {
+                            staleItems.forEach((item) => removeFromCart(item.variant.id));
+                            setStaleItems([]);
+                          }}
+                        >
+                          Remove outdated items
+                        </Button>
+                      </div>
+                    )}
                     <div className="space-y-3" role="radiogroup" aria-label="Payment method">
                       {PAYMENT_METHODS.map(({ id, label, description, Icon }) => {
                         const isSelected = paymentMethod === id;

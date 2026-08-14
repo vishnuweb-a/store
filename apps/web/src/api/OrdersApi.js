@@ -123,7 +123,17 @@ export async function createOnlinePayment({ customer, cartItems }) {
   }
 
   if (!response.ok) {
-    throw new Error(payload?.error || 'We could not start the online payment. Please try again.');
+    const error = new Error(payload?.error || 'We could not start the online payment. Please try again.');
+
+    // Positions of cart lines the server could not recognise, so the checkout
+    // can name them and offer to remove them.
+    if (Array.isArray(payload?.invalid_items)) {
+      error.invalidItems = payload.invalid_items
+        .map((index) => cartItems[index])
+        .filter(Boolean);
+    }
+
+    throw error;
   }
 
   return payload;

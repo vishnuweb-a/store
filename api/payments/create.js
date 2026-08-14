@@ -60,7 +60,15 @@ export default async function handler(req, res) {
     });
   } catch (error) {
     if (error?.isValidationError) {
-      json(res, 400, { error: error.message });
+      if (error.invalidIndexes) {
+        // Positions only — the client maps them back to its own cart lines.
+        logEvent('payment.create.unrecognised_items', { count: error.invalidIndexes.length });
+      }
+
+      json(res, 400, {
+        error: error.message,
+        ...(error.invalidIndexes ? { invalid_items: error.invalidIndexes } : {}),
+      });
       return;
     }
 

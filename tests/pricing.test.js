@@ -234,3 +234,56 @@ describe('formatInr', () => {
     assert.equal(formatInr(0), '₹0.00');
   });
 });
+
+describe('carts saved before the Supabase migration', () => {
+  // The cart storage key never changed when the catalogue moved to Supabase, so
+  // a browser can still hold lines keyed by the old catalogue's opaque ids.
+  const LEGACY_ID = 'prod_01HQ2X8ZK3';
+
+  test('throws with the offending index so the checkout can name the item', () => {
+    try {
+      normalizeItems([
+        { product_id: '1', size: 'M', quantity: 1 },
+        { product_id: LEGACY_ID, size: 'M', quantity: 1 },
+      ]);
+      assert.fail('expected a validation error');
+    } catch (error) {
+      assert.equal(error.isValidationError, true);
+      assert.deepEqual(error.invalidIndexes, [1]);
+      assert.match(error.message, /could not recognise/);
+    }
+  });
+
+  test('reports every unrecognised line, not just the first', () => {
+    try {
+      normalizeItems([
+        { product_id: LEGACY_ID, quantity: 1 },
+        { product_id: '1', size: 'M', quantity: 1 },
+        { product_id: 'prod_other', quantity: 1 },
+      ]);
+      assert.fail('expected a validation error');
+    } catch (error) {
+      assert.deepEqual(error.invalidIndexes, [0, 2]);
+    }
+  });
+
+  test('an entirely stale cart reports every line', () => {
+    try {
+      normalizeItems([{ product_id: LEGACY_ID, quantity: 1 }]);
+      assert.fail('expected a validation error');
+    } catch (error) {
+      assert.match(error.message, /could not recognise/);
+      assert.deepEqual(error.invalidIndexes, [0]);
+    }
+  });
+
+  test('a valid cart still passes untouched', () => {
+    assert.deepEqual(normalizeItems([{ product_id: '1', size: 'M', quantity: 2 }]), [
+      { product_id: '1', size: 'M', quantity: 2 },
+    ]);
+  });
+
+  test('quantity validation still runs on recognised lines', () => {
+    assert.throws(() => normalizeItems([{ product_id: '1', quantity: 0 }]), /quantity/);
+  });
+});
