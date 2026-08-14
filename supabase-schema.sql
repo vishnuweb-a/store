@@ -121,3 +121,9 @@ create index if not exists payment_events_order_ref_idx on public.payment_events
 -- payment events at all. Only the service role, used exclusively by the
 -- serverless functions, reaches this table.
 alter table public.payment_events enable row level security;
+
+-- PostgREST caches the table schema, and Supabase's API layer will keep
+-- reporting "Could not find the 'payment_status' column of 'orders' in the
+-- schema cache" until that cache is refreshed. Supabase usually reloads on its
+-- own, but this makes the migration self-sufficient.
+notify pgrst, 'reload schema';
