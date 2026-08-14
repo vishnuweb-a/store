@@ -82,6 +82,97 @@ export async function createCodOrder({ customer, cartItems }) {
   return order;
 }
 
+/**
+ * Starts an online (Airpay) payment for the current cart.
+ *
+ * Only *what* is being bought is sent — ids, sizes and quantities. The server
+ * prices the order from Supabase and creates the pending order, so nothing the
+ * browser says about money is trusted. The response is an already-encrypted
+ * form payload; submitPayment() below hands it to Airpay.
+ *
+ * @param {Object} params
+ * @param {{fullName: string, phone: string, address: string, landmark: string}} params.customer
+ * @param {Array} params.cartItems - Items from the cart context
+ * @returns {Promise<{order_ref: string, action: string, fields: Record<string, string>}>}
+ */
+export async function createOnlinePayment({ customer, cartItems }) {
+  if (!cartItems || cartItems.length === 0) {
+    throw new Error('Cannot place an order with an empty cart.');
+  }
+
+  const items = cartItems.map((item) => ({
+    product_id: item.product.id,
+    // Sized products cart each size as its own variant, so variant.title is the
+    // size. Unsized products have no size to send.
+    size: item.product.sizes?.length > 0 ? item.variant.title : null,
+    quantity: item.quantity,
+  }));
+
+  const response = await fetch('/api/payments/create', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ customer, items }),
+  });
+
+  let payload = null;
+
+  try {
+    payload = await response.json();
+  } catch (error) {
+    throw new Error('We could not start the online payment. Please try again.');
+  }
+
+  if (!response.ok) {
+    throw new Error(payload?.error || 'We could not start the online payment. Please try again.');
+  }
+
+  return payload;
+}
+
+/**
+ * Hands the customer to Airpay's hosted payment page by POSTing the encrypted
+ * fields the server produced. A form POST rather than a redirect because the
+ * payload is larger than a URL should carry.
+ *
+ * @param {{action: string, fields: Record<string, string>}} payment
+ */
+export function submitPayment(payment) {
+  const form = document.createElement('form');
+  form.method = 'POST';
+  form.action = payment.action;
+  form.style.display = 'none';
+
+  Object.entries(payment.fields || {}).forEach(([name, value]) => {
+    const input = document.createElement('input');
+    input.type = 'hidden';
+    input.name = name;
+    input.value = value;
+    form.appendChild(input);
+  });
+
+  document.body.appendChild(form);
+  form.submit();
+}
+
+/**
+ * Reads the status of an online order after Airpay returns the customer.
+ * The status comes from the server, which verifies it with Airpay directly —
+ * never from the redirect's query string.
+ *
+ * @param {string} orderRef
+ * @returns {Promise<Object>} The order, shaped like createCodOrder's result
+ */
+export async function getOnlineOrder(orderRef) {
+  const response = await fetch(`/api/payments/status?ref=${encodeURIComponent(orderRef)}`);
+  const payload = await response.json().catch(() => null);
+
+  if (!response.ok) {
+    throw new Error(payload?.error || 'We could not load your order.');
+  }
+
+  return payload.order;
+}
+
 function saveOrder(order) {
   try {
     const orders = getOrders();

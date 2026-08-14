@@ -2,21 +2,37 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Helmet } from 'react-helmet';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { Banknote, CheckCircle2, Loader2, MapPin, Phone, User } from 'lucide-react';
+import { Banknote, CheckCircle2, CreditCard, Loader2, MapPin, Phone, User } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { useCart } from '@/hooks/useCart';
 import { useToast } from '@/hooks/use-toast';
 import { formatCurrency } from '@/api/EcommerceApi';
-import { createCodOrder } from '@/api/OrdersApi';
+import { createCodOrder, createOnlinePayment, submitPayment } from '@/api/OrdersApi';
 import Header from '@/components/Header';
 import Footer from '@/components/Footer';
 import ShoppingCart from '@/components/ShoppingCart';
 
+const PAYMENT_METHODS = [
+  {
+    id: 'cod',
+    label: 'Cash on Delivery',
+    description: 'Pay in cash when your order is delivered',
+    Icon: Banknote,
+  },
+  {
+    id: 'online',
+    label: 'Pay Online',
+    description: 'Pay securely by UPI, card, net banking or wallet',
+    Icon: CreditCard,
+  },
+];
+
 const CheckoutPage = () => {
   const [isCartOpen, setIsCartOpen] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [paymentMethod, setPaymentMethod] = useState('cod');
   const [errors, setErrors] = useState({});
   const orderPlacedRef = useRef(false);
   const { cartItems, clearCart } = useCart();
@@ -42,6 +58,8 @@ const CheckoutPage = () => {
     return total + price * item.quantity;
   }, 0);
   const totalFormatted = formatCurrency(totalInCents, currencyInfo);
+  const isOnline = paymentMethod === 'online';
+  const selectedMethod = PAYMENT_METHODS.find((method) => method.id === paymentMethod) ?? PAYMENT_METHODS[0];
 
   const validate = () => {
     const nextErrors = {};
@@ -86,7 +104,33 @@ const CheckoutPage = () => {
       return;
     }
 
+    // Guards against a double submit while a request or redirect is in flight.
+    if (isProcessing) {
+      return;
+    }
+
     setIsProcessing(true);
+
+    if (paymentMethod === 'online') {
+      try {
+        const payment = await createOnlinePayment({ customer: customerInfo, cartItems });
+
+        // The cart is deliberately left intact: the payment can still fail or
+        // be abandoned, and the customer should come back to a full cart.
+        // /success clears it once the payment is confirmed.
+        submitPayment(payment);
+      } catch (error) {
+        toast({
+          title: 'Could not start online payment',
+          description:
+            error.message || 'There was a problem reaching the payment gateway. Please try again.',
+          variant: 'destructive',
+        });
+        setIsProcessing(false);
+      }
+
+      return;
+    }
 
     try {
       const order = await createCodOrder({ customer: customerInfo, cartItems });
@@ -119,7 +163,7 @@ const CheckoutPage = () => {
     <>
       <Helmet>
         <title>Checkout - FRONTIVA</title>
-        <meta name="description" content="Complete your order with Cash on Delivery." />
+        <meta name="description" content="Complete your order with Cash on Delivery or pay online." />
       </Helmet>
 
       <div className="min-h-screen flex flex-col">
@@ -228,19 +272,34 @@ const CheckoutPage = () => {
                     className="bg-card p-6 rounded-xl shadow-sm"
                   >
                     <h2 className="font-display text-2xl font-bold mb-6 text-card-foreground">Payment Method</h2>
-                    <div
-                      role="radio"
-                      aria-checked="true"
-                      className="flex items-center gap-4 p-4 rounded-lg border-2 border-primary bg-accent/50"
-                    >
-                      <div className="bg-primary/10 p-3 rounded-lg">
-                        <Banknote className="h-6 w-6 text-primary" aria-hidden="true" />
-                      </div>
-                      <div className="flex-grow">
-                        <p className="font-semibold text-card-foreground">Cash on Delivery</p>
-                        <p className="text-sm text-muted-foreground">Pay in cash when your order is delivered</p>
-                      </div>
-                      <CheckCircle2 className="h-6 w-6 text-primary shrink-0" aria-hidden="true" />
+                    <div className="space-y-3" role="radiogroup" aria-label="Payment method">
+                      {PAYMENT_METHODS.map(({ id, label, description, Icon }) => {
+                        const isSelected = paymentMethod === id;
+
+                        return (
+                          <button
+                            key={id}
+                            type="button"
+                            role="radio"
+                            aria-checked={isSelected}
+                            onClick={() => setPaymentMethod(id)}
+                            className={`w-full text-left flex items-center gap-4 p-4 rounded-lg border-2 transition-colors ${
+                              isSelected ? 'border-primary bg-accent/50' : 'border-border hover:bg-muted'
+                            }`}
+                          >
+                            <div className="bg-primary/10 p-3 rounded-lg">
+                              <Icon className="h-6 w-6 text-primary" aria-hidden="true" />
+                            </div>
+                            <div className="flex-grow">
+                              <p className="font-semibold text-card-foreground">{label}</p>
+                              <p className="text-sm text-muted-foreground">{description}</p>
+                            </div>
+                            {isSelected && (
+                              <CheckCircle2 className="h-6 w-6 text-primary shrink-0" aria-hidden="true" />
+                            )}
+                          </button>
+                        );
+                      })}
                     </div>
                   </motion.div>
                 </div>
@@ -284,7 +343,7 @@ const CheckoutPage = () => {
                       </div>
                       <div className="flex justify-between text-card-foreground">
                         <span>Payment</span>
-                        <span className="text-muted-foreground">Cash on Delivery</span>
+                        <span className="text-muted-foreground">{selectedMethod.label}</span>
                       </div>
                       <div className="flex justify-between text-lg font-bold text-card-foreground">
                         <span>Total</span>
@@ -299,14 +358,18 @@ const CheckoutPage = () => {
                       {isProcessing ? (
                         <>
                           <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                          Placing Order...
+                          {isOnline ? 'Redirecting to payment...' : 'Placing Order...'}
                         </>
+                      ) : isOnline ? (
+                        `Pay ${totalFormatted}`
                       ) : (
                         'Confirm Order'
                       )}
                     </Button>
                     <p className="mt-3 text-xs text-center text-muted-foreground">
-                      No advance payment required — pay {totalFormatted} on delivery.
+                      {isOnline
+                        ? `You will be taken to our secure payment partner to pay ${totalFormatted}.`
+                        : `No advance payment required — pay ${totalFormatted} on delivery.`}
                     </p>
                   </motion.div>
                 </div>

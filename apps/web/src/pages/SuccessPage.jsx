@@ -1,25 +1,132 @@
 import React, { useEffect, useState } from 'react';
 import { Helmet } from 'react-helmet';
-import { Link, useLocation } from 'react-router-dom';
+import { Link, useLocation, useSearchParams } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { ArrowRight, Banknote, CheckCircle, MapPin, Phone, User } from 'lucide-react';
+import { AlertCircle, ArrowRight, Banknote, CheckCircle, Clock, CreditCard, Loader2, MapPin, Phone, User } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import Header from '@/components/Header';
 import Footer from '@/components/Footer';
 import ShoppingCart from '@/components/ShoppingCart';
 import { useCart } from '@/hooks/useCart';
-import { getLatestOrder } from '@/api/OrdersApi';
+import { getLatestOrder, getOnlineOrder } from '@/api/OrdersApi';
+
+/**
+ * How an online order's status is presented. COD orders never reach this map —
+ * they keep the original unconditional "Thank You!" confirmation.
+ */
+const ONLINE_STATUS_VIEWS = {
+  paid: {
+    title: 'Order Confirmed',
+    heading: 'Thank You!',
+    message: 'Your payment was successful and your order has been placed.',
+    Icon: CheckCircle,
+    tone: 'bg-green-100 text-green-600',
+    settled: true,
+  },
+  failed: {
+    title: 'Payment Not Completed',
+    heading: 'Payment Not Completed',
+    message: 'Your payment did not go through, so no order was placed. Your cart is still saved.',
+    Icon: AlertCircle,
+    tone: 'bg-red-100 text-red-600',
+    settled: true,
+  },
+  processing: {
+    title: 'Payment Status',
+    heading: 'Payment Still Processing',
+    message:
+      'Your bank has not finished confirming this payment yet. We will keep checking and update your order automatically.',
+    Icon: Clock,
+    tone: 'bg-amber-100 text-amber-600',
+    settled: false,
+  },
+  initiated: {
+    title: 'Payment Status',
+    heading: 'Confirming Your Payment',
+    message: 'We are checking this payment with our payment partner. This usually takes a few seconds.',
+    Icon: Clock,
+    tone: 'bg-amber-100 text-amber-600',
+    settled: false,
+  },
+  requires_review: {
+    title: 'Payment Status',
+    heading: 'Payment Being Verified',
+    message:
+      'We could not automatically confirm this payment, so our team is reviewing it. You have not been charged twice, and we will contact you shortly.',
+    Icon: Clock,
+    tone: 'bg-amber-100 text-amber-600',
+    settled: false,
+  },
+};
+
+const PENDING_VIEW = {
+  title: 'Payment Status',
+  heading: 'Confirming Your Payment',
+  message: 'This usually takes a few seconds. Please do not close this page.',
+  Icon: Clock,
+  tone: 'bg-amber-100 text-amber-600',
+  settled: false,
+};
 
 const SuccessPage = () => {
   const [isCartOpen, setIsCartOpen] = useState(false);
   const { clearCart } = useCart();
   const location = useLocation();
+  const [searchParams] = useSearchParams();
 
-  const order = location.state?.order || getLatestOrder();
+  // Present only when Airpay has just returned the customer to the site.
+  const paymentRef = searchParams.get('ref');
+
+  const [onlineOrder, setOnlineOrder] = useState(null);
+  const [isLoadingPayment, setIsLoadingPayment] = useState(Boolean(paymentRef));
+  const [paymentError, setPaymentError] = useState(null);
+
+  const order = paymentRef ? onlineOrder : location.state?.order || getLatestOrder();
+
+  // payment_status is the authoritative online state; status mirrors it.
+  const paymentStatus = onlineOrder?.payment_status || onlineOrder?.status;
+
+  const statusView = paymentRef ? ONLINE_STATUS_VIEWS[paymentStatus] || PENDING_VIEW : null;
 
   useEffect(() => {
+    if (!paymentRef) {
+      return;
+    }
+
+    let cancelled = false;
+
+    getOnlineOrder(paymentRef)
+      .then((loaded) => {
+        if (!cancelled) {
+          setOnlineOrder(loaded);
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setPaymentError(error.message || 'We could not load your order.');
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setIsLoadingPayment(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [paymentRef]);
+
+  useEffect(() => {
+    // A failed or still-unconfirmed online payment must keep the cart, so the
+    // customer can retry without rebuilding it. Every other case clears it,
+    // exactly as before.
+    if (paymentRef && paymentStatus !== 'paid') {
+      return;
+    }
+
     clearCart();
-  }, [clearCart]);
+  }, [clearCart, paymentRef, paymentStatus]);
 
   const orderDate = order
     ? new Date(order.created_at).toLocaleDateString('en-IN', {
@@ -33,7 +140,7 @@ const SuccessPage = () => {
   return (
     <>
       <Helmet>
-        <title>Order Confirmed - FRONTIVA</title>
+        <title>{(statusView?.title || 'Order Confirmed')} - FRONTIVA</title>
         <meta name="description" content="Your order has been placed successfully." />
       </Helmet>
 
@@ -53,12 +160,31 @@ const SuccessPage = () => {
                 initial={{ scale: 0 }}
                 animate={{ scale: 1 }}
                 transition={{ type: 'spring', stiffness: 260, damping: 20, delay: 0.1 }}
-                className="inline-flex items-center justify-center w-24 h-24 bg-green-100 rounded-full mb-6"
+                className={`inline-flex items-center justify-center w-24 h-24 rounded-full mb-6 ${
+                  statusView ? statusView.tone : 'bg-green-100 text-green-600'
+                }`}
               >
-                <CheckCircle className="h-14 w-14 text-green-600" aria-hidden="true" />
+                {isLoadingPayment ? (
+                  <Loader2 className="h-14 w-14 animate-spin" aria-hidden="true" />
+                ) : (
+                  React.createElement(statusView ? statusView.Icon : CheckCircle, {
+                    className: 'h-14 w-14',
+                    'aria-hidden': 'true',
+                  })
+                )}
               </motion.div>
-              <h1 className="font-display text-4xl md:text-5xl font-bold mb-4 text-foreground">Thank You!</h1>
-              <p className="text-lg text-muted-foreground">Your order has been placed successfully.</p>
+              <h1 className="font-display text-4xl md:text-5xl font-bold mb-4 text-foreground" aria-live="polite">
+                {isLoadingPayment ? PENDING_VIEW.heading : statusView ? statusView.heading : 'Thank You!'}
+              </h1>
+              <p className="text-lg text-muted-foreground">
+                {paymentError
+                  ? paymentError
+                  : isLoadingPayment
+                    ? PENDING_VIEW.message
+                    : statusView
+                      ? statusView.message
+                      : 'Your order has been placed successfully.'}
+              </p>
             </motion.div>
 
             {order && (
@@ -80,8 +206,12 @@ const SuccessPage = () => {
                   <div>
                     <h3 className="font-semibold text-sm text-muted-foreground mb-1">Payment Method</h3>
                     <p className="text-lg font-bold text-card-foreground inline-flex items-center gap-2">
-                      <Banknote className="h-5 w-5 text-primary" aria-hidden="true" />
-                      Cash on Delivery
+                      {order.payment_method === 'Online Payment' ? (
+                        <CreditCard className="h-5 w-5 text-primary" aria-hidden="true" />
+                      ) : (
+                        <Banknote className="h-5 w-5 text-primary" aria-hidden="true" />
+                      )}
+                      {order.payment_method || 'Cash on Delivery'}
                     </p>
                   </div>
                   <div>
@@ -150,6 +280,23 @@ const SuccessPage = () => {
               transition={{ duration: 0.4, delay: 0.3 }}
               className="flex flex-col sm:flex-row gap-4 justify-center"
             >
+              {statusView && !statusView.settled && !paymentError && (
+                <Button
+                  size="lg"
+                  variant="outline"
+                  onClick={() => window.location.reload()}
+                  className="w-full sm:w-auto"
+                >
+                  Refresh Status
+                </Button>
+              )}
+              {paymentStatus === 'failed' && (
+                <Link to="/checkout">
+                  <Button size="lg" className="bg-primary text-primary-foreground hover:bg-primary/90 font-semibold w-full sm:w-auto">
+                    Try Again
+                  </Button>
+                </Link>
+              )}
               <Link to="/shop">
                 <Button size="lg" className="bg-primary text-primary-foreground hover:bg-primary/90 font-semibold w-full sm:w-auto">
                   Continue Shopping

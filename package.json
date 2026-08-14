@@ -2,11 +2,13 @@
   "name": "monorepo",
   "version": "0.0.0",
   "private": true,
+  "type": "module",
   "scripts": {
     "dev": "concurrently --kill-others --raw \"npm run dev --prefix apps/web\"",
     "build": "concurrently --raw \"npm run build --prefix apps/web\"",
     "start": "concurrently --kill-others --raw",
-    "lint": "concurrently --raw \"npm run lint --prefix apps/web\""
+    "lint": "concurrently --raw \"npm run lint --prefix apps/web\"",
+    "test": "node --test \"tests/*.test.js\""
   },
   "devDependencies": {
     "concurrently": "^10.0.3"

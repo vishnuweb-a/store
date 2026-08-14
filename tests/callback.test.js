@@ -1,0 +1,330 @@
+/**
+ * The Airpay Response/IPN endpoint: payload parsing, field extraction,
+ * integrity checks, duplicate detection, routing, and the guarantee that
+ * nothing forwards to kkchat.in.
+ */
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import test, { describe } from 'node:test';
+import {
+  dedupeKeyFor,
+  extractCallbackFields,
+  extractOrderRef,
+  isBrowserNavigation,
+  verifyMerchantId,
+  verifySecureHash,
+} from '../api/_lib/callback-payload.js';
+import { CALLBACK_PATH } from '../api/_lib/config.js';
+import { sha256Hex } from '../api/_lib/crypto.js';
+import { parseBody, redact } from '../api/_lib/http.js';
+
+const MID = '366751';
+
+/** A representative Airpay callback body. */
+const CALLBACK = {
+  merchant_id: MID,
+  orderid: 'FRVABC12345',
+  customvar: 'FRVABC12345',
+  ap_transactionid: 'AP987654',
+  amount: '1500.00',
+  transaction_status: '200',
+  transaction_payment_status: 'SUCCESS',
+  message: 'Transaction Successful',
+  customer_vpa: 'someone@upi',
+};
+
+describe('parseBody', () => {
+  test('parses the form-encoded body Airpay posts', () => {
+    const parsed = parseBody(
+      'TRANSACTIONID=123&APTRANSACTIONID=AP987&AMOUNT=1500.00&TRANSACTIONSTATUS=200&CUSTOMVAR=FRVABC12345',
+      'application/x-www-form-urlencoded',
+    );
+
+    assert.equal(parsed.CUSTOMVAR, 'FRVABC12345');
+    assert.equal(parsed.TRANSACTIONSTATUS, '200');
+  });
+
+  test('parses a JSON body', () => {
+    assert.deepEqual(parseBody('{"customvar":"FRVABC12345"}', 'application/json'), {
+      customvar: 'FRVABC12345',
+    });
+  });
+
+  test('sniffs the format when the content type is wrong', () => {
+    assert.deepEqual(parseBody('{"a":"1"}', 'application/x-www-form-urlencoded'), { a: '1' });
+  });
+
+  test('never throws on malformed or hostile input', () => {
+    for (const body of ['', '   ', '{not json', '%%%%', '[]', 'null', 'a'.repeat(10000)]) {
+      assert.doesNotThrow(() => parseBody(body, 'application/json'));
+      assert.equal(typeof parseBody(body, 'application/json'), 'object');
+    }
+  });
+
+  test('decodes url-encoded values', () => {
+    assert.equal(parseBody('name=Asha%20Menon', 'application/x-www-form-urlencoded').name, 'Asha Menon');
+  });
+});
+
+describe('extractCallbackFields', () => {
+  test('extracts every documented Airpay field', () => {
+    const fields = extractCallbackFields(CALLBACK);
+
+    assert.equal(fields.merchantId, MID);
+    assert.equal(fields.orderRef, 'FRVABC12345');
+    assert.equal(fields.transactionId, 'AP987654');
+    assert.equal(fields.amount, '1500.00');
+    assert.equal(fields.transactionStatus, '200');
+    assert.equal(fields.paymentStatus, 'SUCCESS');
+    assert.equal(fields.message, 'Transaction Successful');
+    assert.equal(fields.customerVpa, 'someone@upi');
+  });
+
+  test('is case-insensitive about field names', () => {
+    const fields = extractCallbackFields({
+      MERCHANT_ID: MID,
+      CUSTOMVAR: 'FRVABC12345',
+      AP_TRANSACTIONID: 'AP1',
+      TRANSACTION_STATUS: '200',
+      AP_SECUREHASH: 'abc',
+    });
+
+    assert.equal(fields.merchantId, MID);
+    assert.equal(fields.orderRef, 'FRVABC12345');
+    assert.equal(fields.transactionId, 'AP1');
+    assert.equal(fields.secureHash, 'abc');
+  });
+
+  test('returns nulls rather than throwing on an empty payload', () => {
+    const fields = extractCallbackFields({});
+
+    assert.equal(fields.merchantId, null);
+    assert.equal(fields.orderRef, null);
+    assert.equal(fields.secureHash, null);
+  });
+});
+
+describe('extractOrderRef', () => {
+  test('prefers the customvar we set', () => {
+    assert.equal(extractOrderRef({ orderid: 'FRVOTHER1234', customvar: 'FRVABC12345' }), 'FRVABC12345');
+  });
+
+  test('falls back to orderid', () => {
+    assert.equal(extractOrderRef({ ORDERID: 'FRVABC12345' }), 'FRVABC12345');
+  });
+
+  test('rejects anything outside the generated reference format', () => {
+    // The value flows into a PostgREST filter, so the gate is a security control.
+    for (const value of ['../../etc', "eq.1'--", 'short', 'lowercase12345', '', 'FRV*(){}', 'A'.repeat(200)]) {
+      assert.equal(extractOrderRef({ customvar: value }), null);
+    }
+  });
+
+  test('returns null for an absent or non-object payload', () => {
+    assert.equal(extractOrderRef({}), null);
+    assert.equal(extractOrderRef(null), null);
+  });
+});
+
+describe('verifyMerchantId', () => {
+  test('matches our own MID', () => {
+    assert.equal(verifyMerchantId(extractCallbackFields(CALLBACK), MID), 'match');
+  });
+
+  test('flags a callback for a different merchant', () => {
+    const fields = extractCallbackFields({ ...CALLBACK, merchant_id: '999999' });
+
+    assert.equal(verifyMerchantId(fields, MID), 'mismatch');
+  });
+
+  test('reports absent when the callback omits the merchant id', () => {
+    assert.equal(verifyMerchantId(extractCallbackFields({}), MID), 'absent');
+  });
+});
+
+describe('verifySecureHash', () => {
+  const SECRET = 'derived-private-key';
+
+  /** Builds a payload carrying a hash computed the way the verifier expects. */
+  const sign = (payload) => {
+    const signed = Object.keys(payload)
+      .filter((key) => !/securehash/i.test(key))
+      .sort()
+      .map((key) => String(payload[key] ?? ''))
+      .join('');
+
+    return { ...payload, ap_SecureHash: sha256Hex(`${signed}${SECRET}`) };
+  };
+
+  test('accepts a correctly signed callback', () => {
+    assert.equal(verifySecureHash(sign(CALLBACK), SECRET), 'valid');
+  });
+
+  test('rejects a tampered amount', () => {
+    const signed = sign(CALLBACK);
+
+    assert.equal(verifySecureHash({ ...signed, amount: '1.00' }, SECRET), 'invalid');
+  });
+
+  test('rejects a forged hash', () => {
+    assert.equal(verifySecureHash({ ...CALLBACK, ap_SecureHash: 'deadbeef' }, SECRET), 'invalid');
+  });
+
+  test('rejects a hash signed with the wrong secret', () => {
+    assert.equal(verifySecureHash(sign(CALLBACK), 'a-different-secret'), 'invalid');
+  });
+
+  test('reports unavailable when no hash is present', () => {
+    assert.equal(verifySecureHash(CALLBACK, SECRET), 'unavailable');
+  });
+
+  test('reports unavailable when no secret is configured', () => {
+    assert.equal(verifySecureHash(sign(CALLBACK), ''), 'unavailable');
+  });
+});
+
+describe('isBrowserNavigation', () => {
+  test('detects a browser landing on the Response URL', () => {
+    assert.equal(isBrowserNavigation({ headers: { 'sec-fetch-mode': 'navigate' } }), true);
+    assert.equal(isBrowserNavigation({ headers: { 'sec-fetch-dest': 'document' } }), true);
+    assert.equal(isBrowserNavigation({ headers: { accept: 'text/html,application/xhtml+xml' } }), true);
+  });
+
+  test('treats a server-to-server IPN as not a browser', () => {
+    assert.equal(isBrowserNavigation({ headers: { accept: '*/*' } }), false);
+    assert.equal(isBrowserNavigation({ headers: { accept: 'application/json' } }), false);
+    assert.equal(isBrowserNavigation({ headers: {} }), false);
+    assert.equal(isBrowserNavigation({}), false);
+  });
+});
+
+describe('dedupeKeyFor', () => {
+  test('is identical for a redelivered callback', () => {
+    assert.equal(dedupeKeyFor('raw=1', CALLBACK), dedupeKeyFor('raw=1', CALLBACK));
+  });
+
+  test('ignores incidental body differences for the same event', () => {
+    assert.equal(dedupeKeyFor('a=1&b=2', CALLBACK), dedupeKeyFor('b=2&a=1', { ...CALLBACK, extra: '3' }));
+  });
+
+  test('differs for a different order', () => {
+    assert.notEqual(
+      dedupeKeyFor('raw', CALLBACK),
+      dedupeKeyFor('raw', { ...CALLBACK, customvar: 'FRVZZZ99999', orderid: 'FRVZZZ99999' }),
+    );
+  });
+
+  test('differs for a different status on the same order', () => {
+    assert.notEqual(dedupeKeyFor('raw', CALLBACK), dedupeKeyFor('raw', { ...CALLBACK, transaction_status: '400' }));
+  });
+
+  test('falls back to the raw body when nothing is recognisable', () => {
+    assert.equal(dedupeKeyFor('mystery=1', {}), dedupeKeyFor('mystery=1', {}));
+    assert.notEqual(dedupeKeyFor('mystery=1', {}), dedupeKeyFor('mystery=2', {}));
+  });
+});
+
+describe('redact', () => {
+  test('removes payment secrets before anything is logged or stored', () => {
+    const redacted = redact({
+      encdata: 'abc',
+      checksum: 'def',
+      privatekey: 'ghi',
+      access_token: 'jkl',
+      transaction_status: '200',
+    });
+
+    for (const key of ['encdata', 'checksum', 'privatekey', 'access_token']) {
+      assert.equal(redacted[key], '[redacted]');
+    }
+
+    assert.equal(redacted.transaction_status, '200');
+  });
+
+  test('removes customer contact details', () => {
+    const redacted = redact({ phone: '9876543210', email: 'a@b.c', customvar: 'FRVABC12345' });
+
+    assert.equal(redacted.phone, '[redacted]');
+    assert.equal(redacted.email, '[redacted]');
+    assert.equal(redacted.customvar, 'FRVABC12345');
+  });
+
+  test('is case-insensitive', () => {
+    assert.equal(redact({ ENCDATA: 'abc' }).ENCDATA, '[redacted]');
+  });
+});
+
+describe('callback route and Vercel configuration', () => {
+  const vercelConfig = JSON.parse(readFileSync(new URL('../vercel.json', import.meta.url), 'utf8'));
+  const source = readFileSync(new URL('../api/payments/callback.js', import.meta.url), 'utf8');
+
+  test('the exact Airpay-registered path is exposed', () => {
+    assert.equal(CALLBACK_PATH, '/callback/cpm/arp/collection');
+  });
+
+  test('that path is rewritten to the callback function', () => {
+    const rewrite = vercelConfig.rewrites.find((entry) => entry.source === '/callback/cpm/arp/collection');
+
+    assert.ok(rewrite, 'the Airpay callback path must be routed server-side');
+    assert.equal(rewrite.destination, '/api/payments/callback');
+  });
+
+  test('the SPA catch-all cannot intercept it', () => {
+    const callbackIndex = vercelConfig.rewrites.findIndex((entry) => entry.source === '/callback/cpm/arp/collection');
+    const spaIndex = vercelConfig.rewrites.findIndex((entry) => entry.destination === '/index.html');
+
+    assert.ok(callbackIndex > -1 && spaIndex > -1);
+    assert.ok(callbackIndex < spaIndex, 'the callback rewrite must precede the SPA catch-all');
+  });
+
+  test('/api routes also precede the SPA catch-all', () => {
+    const apiIndex = vercelConfig.rewrites.findIndex((entry) => entry.source.startsWith('/api/'));
+    const spaIndex = vercelConfig.rewrites.findIndex((entry) => entry.destination === '/index.html');
+
+    assert.ok(apiIndex > -1 && apiIndex < spaIndex);
+  });
+
+  test('the payment request sends the registered callback path as its return URL', () => {
+    const create = readFileSync(new URL('../api/payments/create.js', import.meta.url), 'utf8');
+
+    assert.match(create, /returnUrl: `\$\{siteOrigin\(req\)\}\$\{CALLBACK_PATH\}`/);
+  });
+
+  test('the handler serves both browser response and server IPN traffic', () => {
+    assert.match(source, /isBrowserNavigation/);
+    assert.match(source, /redirect\(res/);
+  });
+
+  test('settlement is triggered by reference alone, never by the body', () => {
+    assert.match(source, /await settleOrder\(orderRef\)/);
+    assert.ok(!/settleOrder\([^)]*payload/.test(source));
+    assert.ok(!/settleOrder\([^)]*fields/.test(source));
+  });
+});
+
+describe('no forwarding to kkchat.in', () => {
+  const sources = [
+    '../api/payments/callback.js',
+    '../api/payments/return.js',
+    '../api/payments/create.js',
+    '../api/_lib/config.js',
+    '../api/_lib/callback-payload.js',
+  ].map((relative) => readFileSync(new URL(relative, import.meta.url), 'utf8'));
+
+  test('no payment file contains a kkchat.in URL in executable code', () => {
+    for (const source of sources) {
+      // Strip comment bodies; explanatory comments are allowed, URLs are not.
+      const code = source.replace(/^\s*\*.*$/gm, '').replace(/\/\/.*$/gm, '');
+
+      assert.ok(!/https?:\/\/(www\.)?kkchat\.in/.test(code));
+    }
+  });
+
+  test('the callback handler makes no outbound HTTP request at all', () => {
+    const callback = sources[0];
+
+    assert.ok(!callback.includes('fetchWithTimeout('));
+    assert.ok(!/\bfetch\(/.test(callback));
+    assert.ok(!/\baxios\b/.test(callback));
+  });
+});
