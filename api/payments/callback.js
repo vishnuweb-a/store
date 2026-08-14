@@ -30,6 +30,13 @@ import { recordCallback, settleOrder } from '../_lib/orders.js';
 export const config = { maxDuration: 60 };
 
 /**
+ * Whether an ap_SecureHash mismatch blocks settlement. Off by default — see the
+ * reasoning at the check itself. Turn on once the hash construction has been
+ * confirmed against Airpay's merchant integration document.
+ */
+const ENFORCE_SECURE_HASH = String(process.env.AIRPAY_ENFORCE_SECURE_HASH || '').trim().toLowerCase() === 'true';
+
+/**
  * Reads the payload from either a form/JSON POST body or a query string, so the
  * same handler serves the IPN POST and a browser GET landing.
  */
@@ -109,16 +116,16 @@ export default async function handler(req, res) {
     }
 
     // --- Integrity checks. These can withhold trust, never grant it. ---
-    let integrityOk = true;
+    let blocked = false;
 
     try {
       const airpay = airpayConfig();
-      const midCheck = verifyMerchantId(fields, airpay.mid);
 
-      if (midCheck === 'mismatch') {
-        // Not our merchant account. Recorded, never acted on.
+      if (verifyMerchantId(fields, airpay.mid) === 'mismatch') {
+        // Not our merchant account, so not ours to act on. This check is exact
+        // and is enforced unconditionally.
         logEvent('payment.callback.mid_mismatch', { order_ref: orderRef });
-        integrityOk = false;
+        blocked = true;
       }
 
       const hashCheck = verifySecureHash(
@@ -127,19 +134,39 @@ export default async function handler(req, res) {
       );
 
       if (hashCheck === 'invalid') {
-        // Advisory only: a bad hash defers this order to reconciliation rather
-        // than settling from an unauthenticated trigger.
-        logEvent('payment.callback.secure_hash_invalid', { order_ref: orderRef });
-        integrityOk = false;
+        logEvent('payment.callback.secure_hash_invalid', {
+          order_ref: orderRef,
+          enforced: ENFORCE_SECURE_HASH,
+        });
+
+        // Deliberately NOT blocking by default.
+        //
+        // Two reasons. First, the exact ap_SecureHash construction is not in
+        // Airpay's public documentation, so a wrong formula here would reject
+        // every genuine callback and strand real payments in reconciliation.
+        // Second, the secret it is keyed with (privatekey) is posted from the
+        // browser as part of the hosted-page form, so a mismatch is weak
+        // evidence of forgery in the first place.
+        //
+        // Blocking is safe to skip because the hash is not what makes a payment
+        // real: settleOrder() ignores this body entirely and re-verifies against
+        // Airpay's Order Confirmation API. A forged callback therefore cannot
+        // mark anything paid whether or not this check passes.
+        //
+        // Once the construction is confirmed against the merchant integration
+        // document, set AIRPAY_ENFORCE_SECURE_HASH=true to make it blocking.
+        if (ENFORCE_SECURE_HASH) {
+          blocked = true;
+        }
       }
     } catch (error) {
-      // Credentials unavailable: we cannot check integrity, so we do not act on
-      // this delivery. Reconciliation will pick the order up.
+      // Credentials unavailable — settlement would fail anyway. Leave the order
+      // open for reconciliation rather than pretending we checked anything.
       logEvent('payment.callback.integrity_unavailable', { order_ref: orderRef });
-      integrityOk = false;
+      blocked = true;
     }
 
-    if (!integrityOk) {
+    if (blocked) {
       respond(200, 'OK', orderRef);
       return;
     }

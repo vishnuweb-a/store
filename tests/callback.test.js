@@ -328,3 +328,46 @@ describe('no forwarding to kkchat.in', () => {
     assert.ok(!/\baxios\b/.test(callback));
   });
 });
+
+describe('secure-hash enforcement is opt-in', () => {
+  const source = readFileSync(new URL('../api/payments/callback.js', import.meta.url), 'utf8');
+
+  test('a hash mismatch does not block settlement by default', () => {
+    // The construction is unverified and its secret is posted from the browser,
+    // so blocking would strand genuine payments without buying any security.
+    assert.match(source, /if \(ENFORCE_SECURE_HASH\) \{\s*\n\s*blocked = true;/);
+    assert.match(source, /AIRPAY_ENFORCE_SECURE_HASH/);
+  });
+
+  test('enforcement defaults to off', () => {
+    assert.match(source, /AIRPAY_ENFORCE_SECURE_HASH \|\| ''/);
+  });
+
+  test('a merchant-id mismatch blocks unconditionally', () => {
+    const midBlock = source.slice(source.indexOf('mid_mismatch') - 300, source.indexOf('mid_mismatch') + 120);
+
+    assert.match(midBlock, /blocked = true;/);
+    assert.ok(!/ENFORCE_SECURE_HASH/.test(midBlock), 'the MID check must not be conditional');
+  });
+
+  test('a forged callback still cannot mark an order paid', () => {
+    // The safety property does not depend on the hash at all: settlement takes
+    // only the reference and re-verifies with Airpay.
+    assert.match(source, /await settleOrder\(orderRef\)/);
+    assert.ok(!/settleOrder\([^)]*(payload|fields)/.test(source));
+  });
+});
+
+describe('order creation ordering', () => {
+  const create = readFileSync(new URL('../api/payments/create.js', import.meta.url), 'utf8');
+
+  test('authenticates with Airpay before writing a pending order', () => {
+    // Otherwise an OAuth failure leaves an orphan `initiated` row that
+    // reconciliation has to park in requires_review for a human.
+    assert.ok(create.indexOf('getAccessToken()') < create.indexOf('createPendingOrder('));
+  });
+
+  test('still prices from Supabase before doing either', () => {
+    assert.ok(create.indexOf('priceOrder(') < create.indexOf('getAccessToken()'));
+  });
+});

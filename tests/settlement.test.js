@@ -40,10 +40,12 @@ function harness(order, confirmation) {
       applyUpdate: async (table, query, patch) => {
         updates.push(patch);
 
-        const openMatch = query.match(/payment_status=in\.\(([^)]+)\)/);
+        const openMatch = query.match(/payment_status\.in\.\(([^)]+)\)/);
         const open = openMatch ? openMatch[1].split(',') : [];
+        const allowsNull = /payment_status\.is\.null/.test(query);
+        const current = state.payment_status;
 
-        if (!open.includes(state.payment_status)) {
+        if (!(open.includes(current) || (allowsNull && (current === null || current === undefined)))) {
           return [];
         }
 
@@ -177,6 +179,46 @@ describe('settleOrder', () => {
     });
 
     assert.equal((await settleOrder(ONLINE_ORDER.order_ref, h.deps)).status, 'paid');
+  });
+
+  test('settles an order written before payment_status existed', async () => {
+    // Only `status` was set by the older revision. `payment_status IN (...)`
+    // never matches NULL in SQL, so without the null branch this order could
+    // never leave the open state.
+    const h = harness({ ...ONLINE_ORDER, status: 'initiated', payment_status: null }, {
+      verified: true,
+      status: '200',
+      amountInCents: 150000,
+      transactionId: 'AP-13',
+    });
+
+    const result = await settleOrder(ONLINE_ORDER.order_ref, h.deps);
+
+    assert.equal(result.status, 'paid');
+    assert.equal(result.changed, true);
+    assert.equal(h.state.payment_status, 'paid');
+  });
+
+  test('the conditional update tolerates a null payment_status', async () => {
+    const h = harness(ONLINE_ORDER, {
+      verified: true,
+      status: '200',
+      amountInCents: 150000,
+      transactionId: 'AP-14',
+    });
+
+    let seenQuery = '';
+    const inner = h.deps.applyUpdate;
+    h.deps.applyUpdate = async (table, query, patch) => {
+      seenQuery = query;
+      return inner(table, query, patch);
+    };
+
+    await settleOrder(ONLINE_ORDER.order_ref, h.deps);
+
+    assert.match(seenQuery, /payment_status\.is\.null/);
+    // Still scoped to one order, so the broadened filter cannot touch anything else.
+    assert.match(seenQuery, /order_ref=eq\.FRVTESTREF01/);
   });
 
   test('does NOT mark paid while the transaction is INPROCESS at Airpay', async () => {

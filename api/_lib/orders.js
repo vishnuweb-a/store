@@ -229,9 +229,16 @@ export async function settleOrder(orderRef, deps = {}) {
   }
 
   // Conditional on the order still being open. This is the idempotency barrier.
+  //
+  // The null branch matters: an online order written before payment_status
+  // existed carries only `status`, and `payment_status IN (...)` never matches
+  // NULL in SQL — without it such an order could never settle at all. It stays
+  // safe because order_ref is null on every COD row, so this filter cannot
+  // reach one.
   const updated = await applyUpdate(
     'orders',
-    `order_ref=eq.${encodeURIComponent(orderRef)}&payment_status=in.(${OPEN_STATUSES.join(',')})`,
+    `order_ref=eq.${encodeURIComponent(orderRef)}` +
+      `&or=(payment_status.in.(${OPEN_STATUSES.join(',')}),payment_status.is.null)`,
     patch,
   );
 
@@ -293,7 +300,9 @@ export async function listUnresolvedOrders({ olderThanMinutes = 10, limit = 50 }
     'orders',
     `select=order_ref,status,payment_status,created_at` +
       `&payment_method=eq.${encodeURIComponent(ONLINE_PAYMENT_METHOD)}` +
-      `&payment_status=in.(${RECONCILABLE_STATUSES.join(',')})` +
+      // Includes payment_status IS NULL so orders written before the column
+      // existed are swept too, rather than being stuck open forever.
+      `&or=(payment_status.in.(${RECONCILABLE_STATUSES.join(',')}),payment_status.is.null)` +
       `&order_ref=not.is.null` +
       `&created_at=lt.${encodeURIComponent(cutoff)}` +
       `&order=created_at.asc&limit=${Number(limit)}`,

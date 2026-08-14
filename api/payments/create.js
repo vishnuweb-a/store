@@ -31,10 +31,14 @@ export default async function handler(req, res) {
     const customer = normalizeCustomer(body.customer);
     const { items: pricedItems, totalInCents } = await priceOrder(items);
 
+    // Authenticate BEFORE creating the order. If Airpay is unreachable or the
+    // credentials are wrong, the customer simply sees an error and no order is
+    // written — rather than an orphaned `initiated` row that reconciliation
+    // would later have to park in requires_review for a human to close.
+    const { accessToken } = await getAccessToken();
+
     const order = await createPendingOrder({ customer, items: pricedItems, totalInCents });
     orderRef = order.order_ref;
-
-    const { accessToken } = await getAccessToken();
 
     const payment = buildPaymentRequest({
       orderRef,

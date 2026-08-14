@@ -99,6 +99,7 @@ prefixed `VITE_` — that would inline the value into the browser bundle.
 | `AIRPAY_PASSWORD` | yes | |
 | `AIRPAY_ENV` | yes | `live` or `sandbox` |
 | `AIRPAY_VERIFY_URL` | no | Order Confirmation endpoint override |
+| `AIRPAY_ENFORCE_SECURE_HASH` | no | Default `false`; see §8a |
 | `AIRPAY_FALLBACK_BUYER_EMAIL` | recommended | See §10 |
 | `SUPABASE_URL` | yes | Same project the storefront uses |
 | `SUPABASE_SERVICE_ROLE` | yes | Required — `payment_events` is closed to anon |
@@ -213,6 +214,27 @@ open statuses, so concurrent or duplicate deliveries cannot settle twice — the
 loser updates zero rows. Every IPN delivery is also recorded in `payment_events`
 under a unique `dedupe_key`.
 
+### 8a. ap_SecureHash
+
+The callback's `ap_SecureHash` is verified and any mismatch is logged, but by
+default a mismatch does **not** block settlement. Two reasons:
+
+1. The exact hash construction is not published in Airpay's documentation. A
+   wrong formula here would reject every genuine callback and strand real
+   payments until reconciliation swept them up.
+2. The secret it is keyed with (`privatekey`) is posted from the browser as part
+   of the hosted-page form, so a mismatch is weak evidence of forgery.
+
+This is safe because the hash is not what makes a payment real. `settleOrder()`
+ignores the callback body entirely and re-verifies against Airpay's Order
+Confirmation API, so a forged callback cannot mark anything paid either way.
+
+Once the construction is confirmed against the merchant integration document,
+set `AIRPAY_ENFORCE_SECURE_HASH=true` to make it blocking.
+
+The **merchant-id** check is different: that comparison is exact, and a callback
+naming another MID is always rejected.
+
 ---
 
 ## 9. Reconciliation
@@ -249,7 +271,7 @@ a deliberate open decision, not an oversight.
 npm install
 
 # 2. Verify locally before deploying
-npm test          # 163 tests
+npm test          # 171 tests
 npm run lint      # eslint --quiet
 npm run build     # NOTE: on Windows this silently skips vite (see below);
                   # run `npx vite build --outDir ../../dist/apps/web` from apps/web instead
