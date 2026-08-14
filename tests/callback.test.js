@@ -10,11 +10,12 @@ import {
   extractCallbackFields,
   extractOrderRef,
   isBrowserNavigation,
+  unwrapEnvelope,
   verifyMerchantId,
   verifySecureHash,
 } from '../api/_lib/callback-payload.js';
 import { CALLBACK_PATH } from '../api/_lib/config.js';
-import { sha256Hex } from '../api/_lib/crypto.js';
+import { encrypt, encryptionKey, sha256Hex } from '../api/_lib/crypto.js';
 import { parseBody, redact } from '../api/_lib/http.js';
 
 const MID = '366751';
@@ -435,5 +436,108 @@ describe('a real Airpay IPN', () => {
     assert.equal(stored.TRANSACTIONSTATUS, '200');
     assert.equal(stored.AMOUNT, '1500.00');
     assert.equal(stored.APTRANSACTIONID, '250814000123456');
+  });
+});
+
+describe('enveloped callback ({merchant_id, response})', () => {
+  // Airpay sends this endpoint two shapes. This is the encrypted one, the same
+  // envelope its API responses use, decoded with the project's existing
+  // decrypt() — no new algorithm.
+  const KEY = encryptionKey('testuser', 'testpass');
+
+  const INNER = {
+    MERCID: MID,
+    TRANSACTIONID: 'FRVMFA1B2C3D4E5F6',
+    APTRANSACTIONID: '250814000123456',
+    AMOUNT: '2.00',
+    TRANSACTIONSTATUS: '200',
+    TRANSACTIONPAYMENTSTATUS: 'SUCCESS',
+    MESSAGE: 'Transaction Successful',
+    CUSTOMVAR: 'FRVMFA1B2C3D4E5F6',
+    ap_SecureHash: 'abc123',
+    CUSTOMERVPA: 'someone@upi',
+  };
+
+  const enveloped = (inner = INNER, key = KEY) => ({
+    merchant_id: MID,
+    response: encrypt(JSON.stringify(inner), key),
+  });
+
+  test('the raw envelope alone yields no order reference — the reported symptom', () => {
+    const payload = enveloped();
+
+    assert.equal(extractOrderRef(payload), null);
+    assert.equal(extractCallbackFields(payload).transactionStatus, null);
+  });
+
+  test('unwrapping recovers every field', () => {
+    const { payload, enveloped: wasEnveloped, unwrapped } = unwrapEnvelope(enveloped(), KEY);
+
+    assert.equal(wasEnveloped, true);
+    assert.equal(unwrapped, true);
+
+    const fields = extractCallbackFields(payload);
+
+    assert.equal(fields.orderRef, 'FRVMFA1B2C3D4E5F6');
+    assert.equal(fields.transactionStatus, '200');
+    assert.equal(fields.paymentStatus, 'SUCCESS');
+    assert.equal(fields.amount, '2.00');
+    assert.equal(fields.transactionId, '250814000123456');
+    assert.equal(fields.secureHash, 'abc123');
+    assert.equal(fields.customerVpa, 'someone@upi');
+  });
+
+  test('the outer merchant_id survives the merge', () => {
+    const { payload } = unwrapEnvelope(enveloped(), KEY);
+
+    assert.equal(extractCallbackFields(payload).merchantId, MID);
+  });
+
+  test('decodes a form-encoded inner payload too', () => {
+    const inner = new URLSearchParams(INNER).toString();
+    const payload = { merchant_id: MID, response: encrypt(inner, KEY) };
+
+    const { unwrapped, payload: merged } = unwrapEnvelope(payload, KEY);
+
+    assert.equal(unwrapped, true);
+    assert.equal(extractOrderRef(merged), 'FRVMFA1B2C3D4E5F6');
+  });
+
+  test('a plaintext IPN passes straight through untouched', () => {
+    const plain = { MERCID: MID, CUSTOMVAR: 'FRVMFA1B2C3D4E5F6', TRANSACTIONSTATUS: '200' };
+    const result = unwrapEnvelope(plain, KEY);
+
+    assert.equal(result.enveloped, false);
+    assert.equal(result.unwrapped, false);
+    assert.deepEqual(result.payload, plain);
+  });
+
+  test('a wrong key degrades gracefully rather than throwing', () => {
+    const result = unwrapEnvelope(enveloped(), encryptionKey('other', 'creds'));
+
+    assert.equal(result.enveloped, true);
+    assert.equal(result.unwrapped, false);
+    assert.ok(result.reason);
+    // Original payload preserved, so forwarding is unaffected.
+    assert.equal(result.payload.merchant_id, MID);
+  });
+
+  test('a missing key degrades gracefully', () => {
+    const result = unwrapEnvelope(enveloped(), null);
+
+    assert.equal(result.unwrapped, false);
+    assert.match(result.reason, /no key/);
+  });
+
+  test('never throws on a malformed or hostile envelope', () => {
+    for (const response of ['', 'x', 'not-encrypted-at-all', 'a'.repeat(500), '{}', null, undefined, 12345]) {
+      assert.doesNotThrow(() => unwrapEnvelope({ merchant_id: MID, response }, KEY));
+    }
+  });
+
+  test('never throws on a malformed payload object', () => {
+    for (const payload of [{}, null, undefined, { response: {} }, { response: [] }]) {
+      assert.doesNotThrow(() => unwrapEnvelope(payload, KEY));
+    }
   });
 });

@@ -54,9 +54,19 @@ export async function forwardCallback({ raw, contentType, orderRef = null, incom
   }
 
   const url = clientCallbackUrl();
+  const bytes = String(raw ?? '').length;
   const startedAt = Date.now();
 
-  logEvent('airpay.callback.forward.start', { order_ref: orderRef, bytes: String(raw || '').length });
+  // Hostname only — never the full URL with any path or query it might carry.
+  let destination;
+
+  try {
+    destination = new global.URL(url).hostname;
+  } catch {
+    destination = 'invalid-url';
+  }
+
+  logEvent('airpay.callback.forward.start', { destination, order_ref: orderRef, bytes });
 
   try {
     const response = await fetchWithTimeout(
@@ -83,9 +93,11 @@ export async function forwardCallback({ raw, contentType, orderRef = null, incom
 
     if (response.ok) {
       logEvent('airpay.callback.forward.success', {
-        order_ref: orderRef,
+        destination,
         status: response.status,
+        bytes,
         elapsed_ms: elapsedMs,
+        order_ref: orderRef,
       });
 
       return { forwarded: true, status: response.status };
@@ -94,18 +106,23 @@ export async function forwardCallback({ raw, contentType, orderRef = null, incom
     // A non-2xx from the client endpoint is their problem to investigate, not a
     // reason for anything here to fail.
     logEvent('airpay.callback.forward.failure', {
-      order_ref: orderRef,
+      destination,
       status: response.status,
+      bytes,
       elapsed_ms: elapsedMs,
+      order_ref: orderRef,
+      error: 'non-2xx',
     });
 
     return { forwarded: false, status: response.status, reason: 'non-2xx' };
   } catch (error) {
     logEvent('airpay.callback.forward.failure', {
-      order_ref: orderRef,
+      destination,
       status: null,
+      bytes,
       elapsed_ms: Date.now() - startedAt,
-      reason: error?.name === 'AbortError' ? 'timeout' : 'network',
+      order_ref: orderRef,
+      error: error?.name === 'AbortError' ? 'timeout' : 'network',
     });
 
     return {

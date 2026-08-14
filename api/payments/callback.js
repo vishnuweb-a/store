@@ -22,11 +22,12 @@ import {
   dedupeKeyFor,
   extractCallbackFields,
   isBrowserNavigation,
+  unwrapEnvelope,
   verifyMerchantId,
   verifySecureHash,
 } from '../_lib/callback-payload.js';
 import { airpayConfig, siteOrigin } from '../_lib/config.js';
-import { privateKey } from '../_lib/crypto.js';
+import { encryptionKey, privateKey } from '../_lib/crypto.js';
 import { forwardCallback } from '../_lib/forward-callback.js';
 import { logEvent, parseBody, readRawBody, redact, redirect } from '../_lib/http.js';
 import { recordCallback, settleOrder } from '../_lib/orders.js';
@@ -39,6 +40,22 @@ export const config = { maxDuration: 60 };
  * confirmed against Airpay's merchant integration document.
  */
 const ENFORCE_SECURE_HASH = String(process.env.AIRPAY_ENFORCE_SECURE_HASH || '').trim().toLowerCase() === 'true';
+
+/**
+ * The AES key for unwrapping an enveloped callback, or null when credentials
+ * are unavailable. Never throws: a missing key simply means the envelope is
+ * left encoded, which costs us the order reference but nothing else.
+ *
+ * @returns {string|null}
+ */
+function encryptionKeyOrNull() {
+  try {
+    const config = airpayConfig();
+    return encryptionKey(config.username, config.password);
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Reads the payload from either a form/JSON POST body or a query string, so the
@@ -95,29 +112,48 @@ export default async function handler(req, res) {
   let orderRef = null;
 
   try {
-    const { raw, payload } = await readPayload(req);
+    const { raw, payload: received } = await readPayload(req);
+
+    logEvent('payment.callback.received', {
+      source: isBrowser ? 'browser' : 'ipn',
+      method: req.method,
+      content_type: String(req.headers['content-type'] || '') || null,
+      bytes: String(raw || '').length,
+      // Field names only, never values.
+      fields: Object.keys(received).join(','),
+    });
+
+    // Airpay sends this endpoint either a plaintext IPN or an encrypted
+    // envelope ({merchant_id, response}). Best effort, never throws: a payload
+    // that cannot be decoded passes through untouched.
+    const envelope = unwrapEnvelope(received, encryptionKeyOrNull());
+    const payload = envelope.payload;
+
     const fields = extractCallbackFields(payload);
     const dedupeKey = dedupeKeyFor(raw, payload);
 
     orderRef = fields.orderRef;
 
-    // Relay every received callback, verbatim, before any of our own decisions
-    // are made — so what the client receives is what Airpay sent, regardless of
-    // what Frontiva concludes about it. Runs concurrently with settlement below.
+    logEvent('airpay.callback.parsed', {
+      order_ref: orderRef,
+      enveloped: envelope.enveloped,
+      unwrapped: envelope.unwrapped,
+      // Present only when the envelope could not be decoded.
+      reason: envelope.reason,
+      transaction_status: fields.transactionStatus,
+      has_secure_hash: Boolean(fields.secureHash),
+      fields: Object.keys(payload).join(','),
+    });
+
+    // Relay every received callback, verbatim. Deliberately placed after
+    // parsing only so the log line can carry order_ref: nothing above can
+    // prevent it, because unwrapEnvelope() and extractCallbackFields() are
+    // total functions that never throw. A null order_ref does not gate it.
     forwarding = forwardCallback({
       raw,
       contentType: String(req.headers['content-type'] || ''),
       orderRef,
       incomingHeaders: req.headers,
-    });
-
-    logEvent('payment.callback.received', {
-      order_ref: orderRef,
-      source: isBrowser ? 'browser' : 'ipn',
-      method: req.method,
-      transaction_status: fields.transactionStatus,
-      has_secure_hash: Boolean(fields.secureHash),
-      fields: Object.keys(payload).join(','),
     });
 
     // Durable record of the delivery, and the duplicate detector. Stored

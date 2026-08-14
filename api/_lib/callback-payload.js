@@ -11,7 +11,66 @@
  * rather than assuming one spelling.
  */
 import crypto from 'node:crypto';
-import { sha256Hex } from './crypto.js';
+import { decrypt, sha256Hex } from './crypto.js';
+import { parseBody } from './http.js';
+
+/**
+ * Unwraps an Airpay callback delivered as an encrypted envelope.
+ *
+ * Airpay sends this endpoint two different shapes:
+ *
+ *   1. A plaintext IPN, with the fields spelled out (MERCID, TRANSACTIONID,
+ *      TRANSACTIONSTATUS, CUSTOMVAR, ap_SecureHash, ...).
+ *   2. An envelope: `merchant_id` in the clear plus `response`, which carries
+ *      the same information encrypted.
+ *
+ * Shape 2 is the same envelope Airpay uses for its API responses, and it is
+ * decoded here with the project's existing, already-verified primitive —
+ * decrypt() from crypto.js, the counterpart of the encrypt() used to build
+ * every outbound request. No new algorithm is introduced: this is the same
+ * unwrapping parseAirpayResponse() in airpay.js already performs on the
+ * `response` field.
+ *
+ * Best effort by contract. If the envelope cannot be decoded — wrong key,
+ * different encoding, a shape we have not seen — the original payload is
+ * returned untouched and the caller carries on. Decoding failure is never an
+ * error, because settlement does not depend on anything in this body.
+ *
+ * @param {Record<string, unknown>} payload
+ * @param {string|null} key - encryptionKey(); null when credentials are absent
+ * @returns {{payload: Record<string, unknown>, enveloped: boolean, unwrapped: boolean, reason?: string}}
+ */
+export function unwrapEnvelope(payload, key) {
+  const envelope = pick(payload, ['response', 'encdata', 'data']);
+
+  if (typeof envelope !== 'string' || envelope.length <= 16) {
+    return { payload, enveloped: false, unwrapped: false };
+  }
+
+  if (!key) {
+    return { payload, enveloped: true, unwrapped: false, reason: 'no key configured' };
+  }
+
+  let plaintext;
+
+  try {
+    plaintext = decrypt(envelope, key);
+  } catch {
+    return { payload, enveloped: true, unwrapped: false, reason: 'decrypt failed' };
+  }
+
+  // The decrypted content may be JSON or form-encoded; parseBody handles both
+  // and never throws.
+  const decoded = parseBody(plaintext, plaintext.trim().startsWith('{') ? 'application/json' : '');
+
+  if (!decoded || Object.keys(decoded).length === 0) {
+    return { payload, enveloped: true, unwrapped: false, reason: 'empty after decode' };
+  }
+
+  // Merged, not replaced: the outer merchant_id stays available, and the
+  // decoded fields become visible to the existing extractors unchanged.
+  return { payload: { ...payload, ...decoded }, enveloped: true, unwrapped: true };
+}
 
 /** Case-insensitive lookup across a list of candidate field names. */
 function pick(payload, names) {

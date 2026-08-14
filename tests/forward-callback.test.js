@@ -372,3 +372,62 @@ describe('the client URL never reaches the browser', () => {
     }
   });
 });
+
+describe('forwarding is independent of parsing', () => {
+  const callbackSource = readFileSync(new URL('../api/payments/callback.js', import.meta.url), 'utf8');
+
+  test('forwarding is not gated on a non-null order reference', () => {
+    // The reported symptom was order_ref: null alongside a successful forward.
+    // Nothing may make the relay conditional on extraction succeeding.
+    const relayLine = callbackSource.indexOf('forwarding = forwardCallback(');
+    const guardBeforeRelay = callbackSource.slice(0, relayLine).match(/if \(!orderRef\)[\s\S]*?return;/);
+
+    assert.ok(relayLine > -1);
+    assert.equal(guardBeforeRelay, null, 'no early return may precede the relay');
+  });
+
+  test('the relay still runs when the envelope cannot be decoded', async () => {
+    const calls = mockClient({ status: 200 });
+
+    // orderRef null is exactly the enveloped-callback case.
+    const result = await forward({ orderRef: null });
+
+    assert.equal(calls.length, 1);
+    assert.equal(result.forwarded, true);
+  });
+
+  test('an undecodable body is still forwarded verbatim', async () => {
+    const calls = mockClient({ status: 200 });
+    const envelope = 'merchant_id=366751&response=9e7134976bc435d1Wv%2FxzufpQa7rZ8QWb36cHH6tTmAnn';
+
+    await forward({ raw: envelope, orderRef: null });
+
+    assert.equal(calls[0].options.body, envelope);
+  });
+
+  test('parsing helpers used before the relay are total functions', () => {
+    // unwrapEnvelope and extractCallbackFields must never throw, or the relay
+    // below them would be skipped.
+    assert.match(callbackSource, /const envelope = unwrapEnvelope\(received, encryptionKeyOrNull\(\)\)/);
+    assert.match(callbackSource, /function encryptionKeyOrNull\(\)[\s\S]*?catch \{[\s\S]*?return null;/);
+  });
+});
+
+describe('forwarding log shape', () => {
+  const relaySource = readFileSync(new URL('../api/_lib/forward-callback.js', import.meta.url), 'utf8');
+
+  test('logs destination, status, bytes and latency', () => {
+    for (const field of ['destination', 'status', 'bytes', 'elapsed_ms', 'order_ref']) {
+      assert.ok(relaySource.includes(field), `missing ${field} in forward logging`);
+    }
+  });
+
+  test('logs the destination hostname only, never the full URL', () => {
+    assert.match(relaySource, /new global\.URL\(url\)\.hostname/);
+  });
+
+  test('never logs the payload', () => {
+    assert.ok(!/logEvent\([^)]*\braw\b/.test(relaySource));
+    assert.ok(!/logEvent\([^)]*body/.test(relaySource));
+  });
+});
