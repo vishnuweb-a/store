@@ -66,7 +66,23 @@ export async function forwardCallback({ payload, raw = '', orderRef = null, inco
     destination = 'invalid-url';
   }
 
-  logEvent('airpay.callback.forward.start', { destination, order_ref: orderRef, bytes });
+  const fieldCount = payload && typeof payload === 'object' ? Object.keys(payload).length : 0;
+
+  logEvent('airpay.callback.forward.start', {
+    destination,
+    order_ref: orderRef,
+    bytes,
+    // Field count, never field values.
+    fields: fieldCount,
+  });
+
+  if (fieldCount === 0 && bytes > 0) {
+    // A body arrived but parsed to nothing, so the JSON object would be empty.
+    // There is deliberately no fallback to another encoding — the client
+    // accepts JSON only — but this must never fail silently, because the
+    // client would receive {} and lose the whole callback.
+    logEvent('airpay.callback.forward.empty_payload', { destination, order_ref: orderRef, bytes });
+  }
 
   try {
     const response = await fetchWithTimeout(

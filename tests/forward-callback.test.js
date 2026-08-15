@@ -445,3 +445,167 @@ describe('forwarding log shape', () => {
     assert.ok(!/logEvent\([^)]*body/.test(relaySource));
   });
 });
+
+describe('client JSON contract — acceptance criteria', () => {
+  /** The spec's exact example: Airpay form-urlencoded in, JSON object out. */
+  const SPEC_IN = 'merchant_id=366751&response=abc123';
+  const SPEC_OUT = { merchant_id: '366751', response: 'abc123' };
+
+  test('1. form-urlencoded in becomes the exact JSON object out', async () => {
+    const calls = mockClient({ status: 200 });
+
+    await forward({ payload: Object.fromEntries(new URLSearchParams(SPEC_IN)), raw: SPEC_IN });
+
+    assert.equal(calls[0].options.headers['Content-Type'], 'application/json');
+    assert.deepEqual(JSON.parse(calls[0].options.body), SPEC_OUT);
+    assert.equal(calls[0].options.body, JSON.stringify(SPEC_OUT));
+  });
+
+  test('2. a ten-field callback arrives with all ten fields', async () => {
+    const ten = {
+      merchant_id: '366751',
+      orderid: 'ABC123',
+      ap_transactionid: 'XYZ',
+      amount: '200',
+      transaction_status: '200',
+      transaction_payment_status: 'SUCCESS',
+      message: 'Success',
+      ap_SecureHash: 'hash-value',
+      customer_vpa: 'someone@upi',
+      response: 'enc-value',
+    };
+    const calls = mockClient({ status: 200 });
+
+    await forward({ payload: ten });
+
+    const parsed = JSON.parse(calls[0].options.body);
+
+    assert.equal(Object.keys(parsed).length, 10);
+    assert.deepEqual(parsed, ten);
+  });
+
+  test('3. unknown and future Airpay fields are preserved, not dropped', async () => {
+    const calls = mockClient({ status: 200 });
+    const payload = { merchant_id: '366751', SOMETHING_NEW: 'v1', another_unknown: 'v2', '': 'blank-key' };
+
+    await forward({ payload });
+
+    assert.deepEqual(JSON.parse(calls[0].options.body), payload);
+  });
+
+  test('4. the body is never a urlencoded string', async () => {
+    const calls = mockClient({ status: 200 });
+
+    await forward({ payload: Object.fromEntries(new URLSearchParams(SPEC_IN)), raw: SPEC_IN });
+
+    const body = calls[0].options.body;
+
+    assert.ok(!body.includes('merchant_id=366751'));
+    assert.ok(!body.includes('&'));
+    // And not a JSON-encoded string either.
+    assert.notEqual(typeof JSON.parse(body), 'string');
+    assert.ok(!body.startsWith('"'));
+  });
+
+  test('5. Content-Type is exactly application/json, with no charset suffix', async () => {
+    const calls = mockClient({ status: 200 });
+
+    await forward();
+
+    assert.equal(calls[0].options.headers['Content-Type'], 'application/json');
+  });
+
+  test('5b. the incoming Content-Type is never copied through', async () => {
+    for (const incoming of [
+      'application/x-www-form-urlencoded',
+      'multipart/form-data; boundary=x',
+      'text/plain',
+      '',
+    ]) {
+      const calls = mockClient({ status: 200 });
+
+      // The relay takes no content type argument at all, so nothing can leak in.
+      await forward({ contentType: incoming });
+
+      assert.equal(calls[0].options.headers['Content-Type'], 'application/json');
+    }
+  });
+
+  test('6. an encrypted response value is forwarded byte for byte', async () => {
+    const calls = mockClient({ status: 200 });
+    const encrypted =
+      '9e7134976bc435d1Wv/xzufp7Qa7rZ8QWb36cHH6tTmAnnLypyMqyoWshYLy1eHUsbjkY7IkUDGhS9kxA6yR4wUMsrSsjcsqq+vOA==';
+
+    await forward({ payload: { merchant_id: '366751', response: encrypted } });
+
+    const parsed = JSON.parse(calls[0].options.body);
+
+    // Not decrypted, not re-encrypted, not re-encoded. Identical.
+    assert.equal(parsed.response, encrypted);
+    assert.equal(Object.keys(parsed).length, 2);
+  });
+
+  test('values keep their original type — "200" never becomes 200', async () => {
+    const calls = mockClient({ status: 200 });
+
+    await forward({ payload: { transaction_status: '200', flag: 'true', amount: '2.00' } });
+
+    const parsed = JSON.parse(calls[0].options.body);
+
+    assert.strictEqual(parsed.transaction_status, '200');
+    assert.strictEqual(parsed.flag, 'true');
+    assert.strictEqual(parsed.amount, '2.00');
+  });
+
+  test('a genuine boolean or number in an incoming JSON callback is preserved', async () => {
+    const calls = mockClient({ status: 200 });
+
+    await forward({ payload: { ok: true, count: 3, text: 'x' } });
+
+    const parsed = JSON.parse(calls[0].options.body);
+
+    assert.strictEqual(parsed.ok, true);
+    assert.strictEqual(parsed.count, 3);
+  });
+
+  test('7. a 500 from the client does not fail the relay call', async () => {
+    mockClient({ status: 500 });
+
+    const result = await forward();
+
+    assert.equal(result.forwarded, false);
+    assert.equal(result.status, 500);
+  });
+
+  test('8. a timeout is bounded and does not fail the relay call', async () => {
+    mockClient({ hang: true });
+
+    const startedAt = Date.now();
+    const result = await forward();
+
+    assert.equal(result.reason, 'timeout');
+    assert.ok(Date.now() - startedAt < FORWARD_TIMEOUT_MS + 2000);
+  });
+
+  test('9. no fallback to any other encoding exists in the relay', async () => {
+    const relaySource = readFileSync(new URL('../api/_lib/forward-callback.js', import.meta.url), 'utf8');
+    const code = relaySource.replace(/^\s*\*.*$/gm, '').replace(/\/\/.*$/gm, '');
+
+    assert.ok(!/urlencoded/.test(code), 'no form-encoded fallback');
+    assert.ok(!/multipart/.test(code), 'no multipart fallback');
+    assert.ok(!/text\/plain/.test(code), 'no plain-text fallback');
+    // Exactly one Content-Type is ever set.
+    assert.equal((code.match(/'Content-Type':/g) || []).length, 1);
+  });
+
+  test('an unparseable body is reported rather than silently sent as {}', async () => {
+    const calls = mockClient({ status: 200 });
+
+    // No fallback encoding is permitted, so this must at least be detectable.
+    await forward({ payload: {}, raw: 'garbage-that-parsed-to-nothing' });
+
+    assert.deepEqual(JSON.parse(calls[0].options.body), {});
+    assert.match(readFileSync(new URL('../api/_lib/forward-callback.js', import.meta.url), 'utf8'),
+      /airpay\.callback\.forward\.empty_payload/);
+  });
+});

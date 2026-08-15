@@ -28,14 +28,40 @@ one handler serves both kinds of traffic. `vercel.json` rewrites that path onto
 `api/payments/callback.js` — the `/api` prefix is a Vercel filesystem
 requirement, not a change to the public contract.
 
-### kkchat.in
+### Auxiliary relay to kkchat.in
 
-`frontiva.online/callback/cpm/arp/collection -> kkchat.in/...` was a **different,
-pre-existing client integration**. It is not part of this Airpay integration and
-is not implemented here. An earlier revision of this work did add such a relay;
-it has been removed in full. Every remaining `kkchat` occurrence in this
-repository is a comment, a doc line, or a test name — no executable code
-contacts it, and `tests/callback.test.js` asserts it cannot come back.
+Every callback received is also POSTed, once, to the client's endpoint:
+
+```
+POST https://kkchat.in/callback/cpm/arp/collection
+Content-Type: application/json
+
+{"merchant_id": "366751", "response": "9e7134976bc435d1Wv/xzufp..."}
+```
+
+**JSON only.** The client's endpoint accepts nothing else, so there is
+deliberately no fallback encoding. Airpay delivers the callback form-encoded and
+it is re-encoded to a JSON object here; the incoming Content-Type is never
+copied through. The body is an object, never a JSON string and never a
+urlencoded string.
+
+**Lossless.** All received fields are forwarded with their original names and
+values, including fields Frontiva itself never reads. Values keep their incoming
+type — `"200"` stays the string `"200"`. The payload relayed is the one Airpay
+sent, *before* any unwrapping, so an encrypted `response` is passed through
+untouched: not decrypted, not re-encrypted. Decryption happens separately, only
+for Frontiva's own settlement.
+
+**Auxiliary.** It cannot affect payment settlement. `forwardCallback()` never
+rejects, its result is never read, and it is settled with `Promise.allSettled`.
+Any outcome from the client — 2xx, 4xx, 5xx, timeout, DNS failure — leaves
+Frontiva's processing exactly as it would otherwise be. One attempt, no retry,
+4s timeout, and a loop-guard header so a delivery this relay originated is never
+relayed again.
+
+Destination is a server-side constant, overridable with the server-only
+`KKCHAT_CALLBACK_URL`. There is no `VITE_` variant and the URL does not appear
+in the browser bundle.
 
 ---
 
