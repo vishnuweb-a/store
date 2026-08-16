@@ -40,10 +40,18 @@ export default async function handler(req, res) {
 
   // Non-secret operational facts, useful for confirming the deployment matches
   // the Airpay dashboard registration.
+  //
+  // The git fields answer "is the code I just pushed actually live?" without
+  // needing Vercel dashboard access. Vercel injects these at build time; they
+  // are public repository metadata, not secrets. Verifying a deploy by
+  // behaviour has repeatedly been guesswork without them.
   const environment = {
     airpay_env: (process.env.AIRPAY_ENV || '').trim() || null,
     site_origin: siteOrigin(req),
     callback_url: `${siteOrigin(req)}${CALLBACK_PATH}`,
+    commit: (process.env.VERCEL_GIT_COMMIT_SHA || '').trim().slice(0, 7) || null,
+    branch: (process.env.VERCEL_GIT_COMMIT_REF || '').trim() || null,
+    vercel_env: (process.env.VERCEL_ENV || '').trim() || null,
   };
 
   if (!isCronAuthorized(req)) {
