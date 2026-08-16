@@ -123,32 +123,45 @@ export default async function handler(req, res) {
       fields: Object.keys(received).join(','),
     });
 
-    // Airpay sends this endpoint either a plaintext IPN or an encrypted
-    // envelope ({merchant_id, response}). Best effort, never throws: a payload
-    // that cannot be decoded passes through untouched.
-    const envelope = unwrapEnvelope(received, encryptionKeyOrNull());
-    const payload = envelope.payload;
+    // Parsing is contained so that it cannot, under any circumstance, prevent
+    // the relay below from starting.
+    //
+    // These helpers are all written to be total, but "written to be total" is
+    // an assumption, not a guarantee — and if any of them ever threw, control
+    // would jump to the outer catch with `forwarding` still unassigned. The
+    // symptom would be a callback that logs payment.callback.received and then
+    // no airpay.callback.forward.start at all. Parsing is a Frontiva concern;
+    // the relay must not be able to fail with it.
+    let payload = received;
+    let fields = {};
+    let dedupeKey = null;
 
-    const fields = extractCallbackFields(payload);
-    const dedupeKey = dedupeKeyFor(raw, payload);
+    try {
+      const envelope = unwrapEnvelope(received, encryptionKeyOrNull());
 
-    orderRef = fields.orderRef;
+      payload = envelope.payload;
+      fields = extractCallbackFields(payload);
+      dedupeKey = dedupeKeyFor(raw, payload);
+      orderRef = fields.orderRef;
 
-    logEvent('airpay.callback.parsed', {
-      order_ref: orderRef,
-      enveloped: envelope.enveloped,
-      unwrapped: envelope.unwrapped,
-      // Present only when the envelope could not be decoded.
-      reason: envelope.reason,
-      transaction_status: fields.transactionStatus,
-      has_secure_hash: Boolean(fields.secureHash),
-      fields: Object.keys(payload).join(','),
-    });
+      logEvent('airpay.callback.parsed', {
+        order_ref: orderRef,
+        enveloped: envelope.enveloped,
+        unwrapped: envelope.unwrapped,
+        // Present only when the envelope could not be decoded.
+        reason: envelope.reason,
+        transaction_status: fields.transactionStatus,
+        has_secure_hash: Boolean(fields.secureHash),
+        fields: Object.keys(payload).join(','),
+      });
+    } catch (error) {
+      // Parsing failed. The relay still runs below with the raw received
+      // payload; only Frontiva's own settlement is given up on.
+      logEvent('airpay.callback.parse_failed', { source: isBrowser ? 'browser' : 'ipn' });
+    }
 
-    // Relay every received callback, verbatim. Deliberately placed after
-    // parsing only so the log line can carry order_ref: nothing above can
-    // prevent it, because unwrapEnvelope() and extractCallbackFields() are
-    // total functions that never throw. A null order_ref does not gate it.
+    // Relay every received callback. Reached on every path above — a parse
+    // failure cannot skip it, and a null order_ref does not gate it.
     forwarding = forwardCallback({
       // The payload exactly as Airpay sent it, before any unwrapping: an
       // enveloped callback is relayed still enveloped, matching the auth

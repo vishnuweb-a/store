@@ -609,3 +609,57 @@ describe('client JSON contract — acceptance criteria', () => {
       /airpay\.callback\.forward\.empty_payload/);
   });
 });
+
+describe('relay cannot be skipped by the parsing stage', () => {
+  const callbackSource = readFileSync(new URL('../api/payments/callback.js', import.meta.url), 'utf8');
+
+  test('parsing is wrapped so a throw cannot bypass the relay', () => {
+    // The reported production symptom was payment.callback.received with no
+    // airpay.callback.forward.start. That is only reachable if something
+    // between them throws, so nothing between them may be able to.
+    const receivedAt = callbackSource.indexOf("logEvent('payment.callback.received'");
+    const relayAt = callbackSource.indexOf('forwarding = forwardCallback(');
+    const between = callbackSource.slice(receivedAt, relayAt);
+
+    assert.ok(receivedAt > -1 && relayAt > receivedAt);
+    assert.match(between, /try \{/, 'parsing must be contained in its own try');
+    assert.match(between, /catch \(error\) \{/);
+    assert.match(between, /airpay\.callback\.parse_failed/);
+  });
+
+  test('the relay is not inside the parsing try block', () => {
+    // If it were, a parse failure would still skip it.
+    const parseCatch = callbackSource.indexOf('airpay.callback.parse_failed');
+    const relayAt = callbackSource.indexOf('forwarding = forwardCallback(');
+
+    assert.ok(parseCatch < relayAt, 'the relay must come after the parse catch');
+  });
+
+  test('no early return sits between receiving and relaying', () => {
+    const receivedAt = callbackSource.indexOf("logEvent('payment.callback.received'");
+    const relayAt = callbackSource.indexOf('forwarding = forwardCallback(');
+    const between = callbackSource.slice(receivedAt, relayAt);
+
+    assert.ok(!/\breturn;/.test(between), 'nothing may return before the relay starts');
+    assert.ok(!/await respond\(/.test(between), 'nothing may respond before the relay starts');
+  });
+
+  test('the relay starts before recordCallback and settlement', () => {
+    const relayAt = callbackSource.indexOf('forwarding = forwardCallback(');
+
+    assert.ok(relayAt < callbackSource.indexOf('await recordCallback('));
+    assert.ok(relayAt < callbackSource.indexOf('await settleOrder('));
+  });
+
+  test('a payload that defeats parsing is still relayed intact', async () => {
+    // Simulates the post-fix contract: whatever parsing does, the bytes Airpay
+    // sent still reach the client.
+    const calls = mockClient({ status: 200 });
+    const hostile = { MERCID: '366751', CUSTOMVAR: 'not-a-valid-ref', WEIRD: '\u0000\uFFFD' };
+
+    const result = await forward({ payload: hostile, orderRef: null });
+
+    assert.equal(result.forwarded, true);
+    assert.deepEqual(JSON.parse(calls[0].options.body), hostile);
+  });
+});
