@@ -14,6 +14,7 @@ import {
   clientCallbackUrl,
   forwardCallback,
 } from '../api/_lib/forward-callback.js';
+import { CALLBACK_PATH as CALLBACK_PATH_FOR_TEST } from '../api/_lib/config.js';
 
 /** A real Airpay IPN body, form-encoded exactly as Airpay sends it. */
 const RAW_BODY =
@@ -81,7 +82,7 @@ describe('destination', () => {
   test('defaults to the client endpoint', () => {
     delete process.env.KKCHAT_CALLBACK_URL;
 
-    assert.equal(clientCallbackUrl(), 'https://kkchat.in/callback/cpm/arp/collection');
+    assert.equal(clientCallbackUrl(), 'https://kkchat.in/callback/cpm/arp_frontiva/collection');
   });
 
   test('is overridable by a server-only variable', () => {
@@ -96,7 +97,7 @@ describe('destination', () => {
     await forward();
 
     assert.equal(calls.length, 1);
-    assert.equal(calls[0].url, 'https://kkchat.in/callback/cpm/arp/collection');
+    assert.equal(calls[0].url, 'https://kkchat.in/callback/cpm/arp_frontiva/collection');
     assert.equal(calls[0].options.method, 'POST');
   });
 });
@@ -661,5 +662,53 @@ describe('relay cannot be skipped by the parsing stage', () => {
 
     assert.equal(result.forwarded, true);
     assert.deepEqual(JSON.parse(calls[0].options.body), hostile);
+  });
+});
+
+describe('destination is the arp_frontiva path', () => {
+  const NEW_URL = 'https://kkchat.in/callback/cpm/arp_frontiva/collection';
+  const OLD_URL = 'https://kkchat.in/callback/cpm/arp/collection';
+
+  test('the default destination is exactly the new URL', () => {
+    delete process.env.KKCHAT_CALLBACK_URL;
+
+    assert.equal(clientCallbackUrl(), NEW_URL);
+  });
+
+  test('the request is actually POSTed to the new URL', async () => {
+    delete process.env.KKCHAT_CALLBACK_URL;
+
+    const calls = mockClient({ status: 200 });
+
+    await forward();
+
+    assert.equal(calls[0].url, NEW_URL);
+  });
+
+  test('no executable code references the old URL', () => {
+    // Comments and docs may retain it as history; running code may not.
+    for (const file of ['../api/_lib/forward-callback.js', '../api/_lib/config.js', '../api/payments/callback.js']) {
+      const source = readFileSync(new URL(file, import.meta.url), 'utf8');
+      const code = source.replace(/^\s*\*.*$/gm, '').replace(/\/\/.*$/gm, '');
+
+      assert.ok(!code.includes(OLD_URL), `${file} still references the old URL in executable code`);
+    }
+  });
+
+  test('the inbound Airpay path is unchanged — only the outbound destination moved', () => {
+    // Frontiva still RECEIVES on /callback/cpm/arp/collection. That path is
+    // registered with Airpay and must not follow the outbound rename.
+    assert.equal(CALLBACK_PATH_FOR_TEST, '/callback/cpm/arp/collection');
+  });
+
+  test('everything else about the request is unchanged', async () => {
+    const calls = mockClient({ status: 200 });
+
+    await forward();
+
+    assert.equal(calls[0].options.method, 'POST');
+    assert.equal(calls[0].options.headers['Content-Type'], 'application/json');
+    assert.equal(calls[0].options.headers.Accept, 'application/json');
+    assert.deepEqual(JSON.parse(calls[0].options.body), PAYLOAD);
   });
 });

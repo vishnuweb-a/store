@@ -25,11 +25,11 @@ export const CALLBACK_PATH = '/callback/cpm/arp/collection';
 /**
  * NOTE ON kkchat.in
  *
- * `https://frontiva.online/callback/cpm/arp/collection` ->
- * `https://kkchat.in/callback/cpm/arp/collection` was a DIFFERENT, pre-existing
- * client integration. It is not part of this Airpay integration. Airpay
- * callbacks for MID 366751 terminate at Frontiva and are verified against
- * Airpay's Order Confirmation API; nothing here forwards anywhere.
+ * Airpay callbacks for MID 366751 arrive at
+ * `https://frontiva.online/callback/cpm/arp/collection` (CALLBACK_PATH above)
+ * and are verified against Airpay's Order Confirmation API. Each one is also
+ * relayed, as an auxiliary step that cannot affect settlement, to the client's
+ * endpoint -- see DEFAULT_CLIENT_CALLBACK_URL in forward-callback.js.
  */
 
 /** How long we wait on Airpay's own APIs. */

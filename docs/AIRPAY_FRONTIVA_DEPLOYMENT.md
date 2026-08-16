@@ -33,7 +33,7 @@ requirement, not a change to the public contract.
 Every callback received is also POSTed, once, to the client's endpoint:
 
 ```
-POST https://kkchat.in/callback/cpm/arp/collection
+POST https://kkchat.in/callback/cpm/arp_frontiva/collection
 Content-Type: application/json
 
 {"merchant_id": "366751", "response": "9e7134976bc435d1Wv/xzufp..."}

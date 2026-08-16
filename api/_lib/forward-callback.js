@@ -16,7 +16,7 @@ import { fetchWithTimeout, logEvent } from './http.js';
  * server-only override; there is deliberately no VITE_ variable, so this URL
  * never reaches the browser bundle.
  */
-const DEFAULT_CLIENT_CALLBACK_URL = 'https://kkchat.in/callback/cpm/arp/collection';
+const DEFAULT_CLIENT_CALLBACK_URL = 'https://kkchat.in/callback/cpm/arp_frontiva/collection';
 
 export const clientCallbackUrl = () =>
   (process.env.KKCHAT_CALLBACK_URL || DEFAULT_CLIENT_CALLBACK_URL).trim();
