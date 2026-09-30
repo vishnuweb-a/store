@@ -163,8 +163,7 @@ function main() {
 	}
 
 	if (pages.length === 0) {
-		console.error('❌ No pages with Helmet components found!');
-		process.exit(1);
+		throw new Error('No pages with Helmet components found!');
 	}
 
 
@@ -178,5 +177,10 @@ function main() {
 const isMainModule = import.meta.url === `file://${process.argv[1]}`;
 
 if (isMainModule) {
-	main();
+	try {
+		main();
+	} catch (error) {
+		// Non-fatal: llms.txt generation must never block the production build.
+		console.warn('generate-llms.js failed; continuing with build:', error.message);
+	}
 }

@@ -28,8 +28,11 @@ export async function createCodOrder({ customer, cartItems }) {
       product_id: item.product.id,
       variant_id: item.variant.id,
       title: item.product.title,
-      // Sized items cart their size as the variant title.
-      size: item.variant.title,
+      // Sized products cart each size as its own variant, so variant.title is
+      // the size. Unsized products carry no size, and must not fall back to
+      // variant.title there -- that is the SKU, which would read as a size on
+      // the confirmation page and in the admin table.
+      size: item.product.sizes?.length > 0 ? item.variant.title : null,
       image: item.product.image,
       quantity: item.quantity,
       unit_price_in_cents: unitPriceInCents,

@@ -8,7 +8,7 @@ import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { useCart } from '@/hooks/useCart';
 import { useToast } from '@/hooks/use-toast';
-import { formatCurrency } from '@/api/EcommerceApi';
+import { formatCurrency, getCartItemSize } from '@/api/EcommerceApi';
 import { createCodOrder, createOnlinePayment, submitPayment } from '@/api/OrdersApi';
 import Header from '@/components/Header';
 import Footer from '@/components/Footer';
@@ -371,7 +371,9 @@ const CheckoutPage = () => {
                             />
                             <div className="flex-grow">
                               <p className="text-sm font-medium text-card-foreground">{item.product.title}</p>
-                              <p className="text-xs text-muted-foreground">{item.variant.title}</p>
+                              {getCartItemSize(item) && (
+                                <p className="text-xs text-muted-foreground">Size: {getCartItemSize(item)}</p>
+                              )}
                               <p className="text-sm font-semibold text-primary">
                                 {item.variant.sale_price_formatted || item.variant.price_formatted} × {item.quantity}
                               </p>

@@ -4,6 +4,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { Trash2, ShoppingBag, ArrowLeft } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useCart } from '@/hooks/useCart';
+import { getCartItemSize } from '@/api/EcommerceApi';
 import Header from '@/components/Header';
 import Footer from '@/components/Footer';
 import ShoppingCart from '@/components/ShoppingCart';
@@ -60,7 +61,9 @@ const CartPage = () => {
                         />
                         <div className="flex-grow">
                           <h3 className="font-semibold text-lg mb-1 text-card-foreground">{item.product.title}</h3>
-                          <p className="text-sm text-muted-foreground mb-2">{item.variant.title}</p>
+                          {getCartItemSize(item) && (
+                            <p className="text-sm text-muted-foreground mb-2">Size: {getCartItemSize(item)}</p>
+                          )}
                           <p className="text-lg font-bold text-primary mb-4">
                             {item.variant.sale_price_formatted || item.variant.price_formatted}
                           </p>

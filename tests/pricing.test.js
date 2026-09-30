@@ -129,6 +129,17 @@ describe('priceOrder', () => {
     });
   });
 
+  test('leaves an unsized line without a size rather than its SKU', async () => {
+    const { items } = await priceOrder([{ product_id: '2', size: null, quantity: 1 }], {
+      load: load([UNSIZED]),
+    });
+
+    // The SKU is the variant label for an unsized product, but it is not a
+    // size: storing it would surface "Size: GC-1" in orders.items.
+    assert.equal(items[0].size, null);
+    assert.equal(items[0].variant_id, 'variant_2');
+  });
+
   test('rejects an unknown product', async () => {
     await assert.rejects(
       priceOrder([{ product_id: '99', size: 'M', quantity: 1 }], { load: load([SHIRT]) }),

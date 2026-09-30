@@ -14,8 +14,8 @@ const SizeSelector = ({ sizes, selectedSize, onSelect }) => {
 
   return (
     <div className="mb-6">
-      <h3 className="text-sm font-medium text-gray-900 mb-2">Choose Size</h3>
-      <div className="flex flex-wrap gap-2" role="radiogroup" aria-label="Choose size">
+      <h3 className="text-sm font-medium text-gray-900 mb-2">Select Size</h3>
+      <div className="flex flex-wrap gap-2" role="radiogroup" aria-label="Select size">
         {sizes.map(({ size, stock }) => {
           const isSelected = selectedSize === size;
           const isDisabled = stock <= 0;

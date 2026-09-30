@@ -237,3 +237,21 @@ export async function getCategories() {
 
   return { categories, count: categories.length };
 }
+
+/**
+ * The size a cart line was added with, or null for an unsized product.
+ *
+ * Sized products cart each size as its own variant and put the size in
+ * variant.title (see ProductDetailPage), so the product's own size list is what
+ * distinguishes a real size from an unsized product's SKU-derived title.
+ *
+ * @param {{product: Object, variant: Object}} item - A cart context item
+ * @returns {string|null}
+ */
+export function getCartItemSize(item) {
+  if (!item?.product?.sizes?.length) {
+    return null;
+  }
+
+  return item.variant?.title || null;
+}

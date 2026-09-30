@@ -27,6 +27,12 @@ create table if not exists public.products (
 -- Added after the first release, so existing databases need the column too.
 alter table public.products add column if not exists category text;
 
+-- Same reason: product sizes shipped after the first release, so a database
+-- created before then has no sizes column and the create table above is a
+-- no-op for it. Empty array means "unsized" and preserves existing behaviour.
+-- Standalone copy: migrations-product-sizes.sql.
+alter table public.products add column if not exists sizes jsonb not null default '[]'::jsonb;
+
 create index if not exists products_category_idx on public.products (category);
 
 -- Backfill: every product that predates the column is part of the original

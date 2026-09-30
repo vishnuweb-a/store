@@ -47,8 +47,8 @@ function ProductDetailPage() {
     if (sizes.length > 0 && !selectedSizeEntry) {
       toast({
         variant: "destructive",
-        title: "Please choose a size",
-        description: "Select a size before adding this item to your cart."
+        title: "Please select a size",
+        description: "Please select a size before adding this item to your cart."
       });
       return;
     }
@@ -121,8 +121,9 @@ function ProductDetailPage() {
           if (productWithQuantities.variants && productWithQuantities.variants.length > 0) {
             setSelectedVariant(productWithQuantities.variants[0]);
           }
-          const firstAvailableSize = (productWithQuantities.sizes || []).find(entry => entry.stock > 0);
-          setSelectedSize(firstAvailableSize ? firstAvailableSize.size : null);
+          // Deliberately left unselected: the shopper must pick their own size
+          // rather than inherit a default they did not choose.
+          setSelectedSize(null);
         } catch (quantityError) {
           throw quantityError;
         }
@@ -170,7 +171,9 @@ function ProductDetailPage() {
   const availableStock = cartVariant ? cartVariant.inventory_quantity : 0;
   const isStockManaged = cartVariant?.manage_inventory ?? false;
   const hasSizeSelection = sizes.length === 0 || Boolean(selectedSizeEntry);
-  const canAddToCart = hasSizeSelection && (!isStockManaged || quantity <= availableStock);
+  // A missing size leaves the button enabled on purpose: handleAddToCart turns
+  // the click into a toast that says what to do, which a disabled button cannot.
+  const canAddToCart = !hasSizeSelection || !isStockManaged || quantity <= availableStock;
   const currentImage = product.images[currentImageIndex];
   const hasMultipleImages = product.images.length > 1;
   return <>
@@ -279,11 +282,11 @@ function ProductDetailPage() {
                 <ShoppingCart className="mr-2 h-5 w-5" /> Add to Cart
               </Button>
 
-              {isStockManaged && canAddToCart && product.purchasable && <p className="text-sm font-medium text-green-700 mt-3 flex items-center justify-center gap-2">
+              {hasSizeSelection && isStockManaged && canAddToCart && product.purchasable && <p className="text-sm font-medium text-green-700 mt-3 flex items-center justify-center gap-2">
                   <CheckCircle size={16} /> {availableStock} in stock!
                 </p>}
 
-              {isStockManaged && !canAddToCart && product.purchasable && <p className="text-sm font-medium text-yellow-700 mt-3 flex items-center justify-center gap-2">
+              {hasSizeSelection && isStockManaged && !canAddToCart && product.purchasable && <p className="text-sm font-medium text-yellow-700 mt-3 flex items-center justify-center gap-2">
                   <XCircle size={16} /> Not enough stock. Only {availableStock} left.
                 </p>}
 

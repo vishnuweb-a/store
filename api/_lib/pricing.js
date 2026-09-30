@@ -194,7 +194,10 @@ export async function priceOrder(items, deps = {}) {
       product_id: String(row.id),
       variant_id: sizes.length > 0 ? `variant_${row.id}_${variantLabel}` : `variant_${row.id}`,
       title: row.title,
-      size: variantLabel,
+      // Only sized products carry a size. Unsized products fall back to the SKU
+      // for the variant label, which must not leak into `size` -- it would be
+      // stored in orders.items and read as a size on the confirmation page.
+      size: sizes.length > 0 ? variantLabel : null,
       image: row.image_url || null,
       quantity: item.quantity,
       unit_price_in_cents: unitPriceInCents,

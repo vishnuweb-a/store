@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ShoppingCart as ShoppingCartIcon, X } from 'lucide-react';
 import { useCart } from '@/hooks/useCart';
+import { getCartItemSize } from '@/api/EcommerceApi';
 import { Button } from '@/components/ui/button';
 import { useToast } from '@/hooks/use-toast';
 
@@ -56,26 +57,30 @@ const ShoppingCart = ({ isCartOpen, setIsCartOpen }) => {
                   <p>Your cart is empty.</p>
                 </div>
               ) : (
-                cartItems.map(item => (
-                  <div key={item.variant.id} className="flex items-center gap-4 bg-card border border-border p-3 rounded-lg">
-                    <img src={item.product.image} alt={item.product.title} className="w-20 h-20 object-cover rounded-md" />
-                    <div className="flex-grow">
-                   <h3 className="font-bold text-black">{item.product.title}</h3>
-<p className="text-sm text-black font-semibold">{item.variant.title}</p>
-<p className="text-sm text-black font-extrabold">
-  {item.variant.sale_price_formatted || item.variant.price_formatted}
-</p>
-                    </div>
-                    <div className="flex flex-col items-end gap-2">
-                      <div className="flex items-center border border-border rounded-md">
-                        <Button onClick={() => updateQuantity(item.variant.id, Math.max(1, item.quantity - 1))} size="sm" variant="ghost" className="px-2 text-card-foreground hover:bg-muted">-</Button>
-                        <span className="px-2 text-card-foreground">{item.quantity}</span>
-                        <Button onClick={() => updateQuantity(item.variant.id, item.quantity + 1)} size="sm" variant="ghost" className="px-2 text-card-foreground hover:bg-muted">+</Button>
+                cartItems.map(item => {
+                  const itemSize = getCartItemSize(item);
+
+                  return (
+                    <div key={item.variant.id} className="flex items-center gap-4 bg-card border border-border p-3 rounded-lg">
+                      <img src={item.product.image} alt={item.product.title} className="w-20 h-20 object-cover rounded-md" />
+                      <div className="flex-grow">
+                        <h3 className="font-bold text-black">{item.product.title}</h3>
+                        {itemSize && <p className="text-sm text-black font-semibold">Size: {itemSize}</p>}
+                        <p className="text-sm text-black font-extrabold">
+                          {item.variant.sale_price_formatted || item.variant.price_formatted}
+                        </p>
                       </div>
-                      <Button onClick={() => removeFromCart(item.variant.id)} size="sm" variant="ghost" className="text-destructive hover:text-destructive/90 text-xs">Remove</Button>
+                      <div className="flex flex-col items-end gap-2">
+                        <div className="flex items-center border border-border rounded-md">
+                          <Button onClick={() => updateQuantity(item.variant.id, Math.max(1, item.quantity - 1))} size="sm" variant="ghost" className="px-2 text-card-foreground hover:bg-muted">-</Button>
+                          <span className="px-2 text-card-foreground">{item.quantity}</span>
+                          <Button onClick={() => updateQuantity(item.variant.id, item.quantity + 1)} size="sm" variant="ghost" className="px-2 text-card-foreground hover:bg-muted">+</Button>
+                        </div>
+                        <Button onClick={() => removeFromCart(item.variant.id)} size="sm" variant="ghost" className="text-destructive hover:text-destructive/90 text-xs">Remove</Button>
+                      </div>
                     </div>
-                  </div>
-                ))
+                  );
+                })
               )}
             </div>
             {cartItems.length > 0 && (
