@@ -46,6 +46,9 @@ const Footer = () => {
               <Link to="/refund-policy" className="block text-sm text-primary-foreground/80 hover:text-primary-foreground transition-colors">
                 Refund & Cancellation Policy
               </Link>
+              <Link to="/shipping-policy" className="block text-sm text-primary-foreground/80 hover:text-primary-foreground transition-colors">
+                Shipping Policy
+              </Link>
             </nav>
           </div>
 
