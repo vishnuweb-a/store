@@ -3,11 +3,16 @@ import { motion } from 'framer-motion';
 
 /**
  * Premium size picker rendered on the product page. Sizes come from the
- * products.sizes JSON column; entries with no stock render disabled.
+ * products.sizes JSON column.
  *
- * @param {{sizes: Array<{size: string, stock: number}>, selectedSize: string|null, onSelect: (size: string) => void}} props
+ * Stock only disables a size when the product is inventory managed. An
+ * untracked product (track_quantity = false) is not stocked at all, so its
+ * stored per-size numbers are meaningless and every configured size stays
+ * selectable -- matching how the server prices an untracked line.
+ *
+ * @param {{sizes: Array<{size: string, stock: number}>, selectedSize: string|null, onSelect: (size: string) => void, manageInventory?: boolean}} props
  */
-const SizeSelector = ({ sizes, selectedSize, onSelect }) => {
+const SizeSelector = ({ sizes, selectedSize, onSelect, manageInventory = true }) => {
   if (!sizes || sizes.length === 0) {
     return null;
   }
@@ -18,7 +23,7 @@ const SizeSelector = ({ sizes, selectedSize, onSelect }) => {
       <div className="flex flex-wrap gap-2" role="radiogroup" aria-label="Select size">
         {sizes.map(({ size, stock }) => {
           const isSelected = selectedSize === size;
-          const isDisabled = stock <= 0;
+          const isDisabled = manageInventory && stock <= 0;
 
           return (
             <motion.button

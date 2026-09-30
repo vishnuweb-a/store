@@ -41,7 +41,10 @@ function ProductDetailPage() {
     id: `${selectedVariant.id}_${selectedSizeEntry.size}`,
     title: selectedSizeEntry.size,
     inventory_quantity: selectedSizeEntry.stock,
-    manage_inventory: true
+    // Inherited from the product rather than forced on: a size list says which
+    // variants exist, not that the product is inventory managed. Hardcoding
+    // true here made an untracked product unbuyable the moment it got sizes.
+    manage_inventory: selectedVariant.manage_inventory
   } : selectedVariant, [selectedVariant, selectedSizeEntry]);
   const handleAddToCart = useCallback(async () => {
     if (sizes.length > 0 && !selectedSizeEntry) {
@@ -267,7 +270,7 @@ function ProductDetailPage() {
                 </div>
               </div>}
 
-            <SizeSelector sizes={sizes} selectedSize={selectedSize} onSelect={setSelectedSize} />
+            <SizeSelector sizes={sizes} selectedSize={selectedSize} onSelect={setSelectedSize} manageInventory={selectedVariant?.manage_inventory ?? false} />
 
             <div className="flex items-center gap-4 mb-6">
               <div className="flex items-center border border-border rounded-full p-1">

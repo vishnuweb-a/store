@@ -164,8 +164,11 @@ export async function priceOrder(items, deps = {}) {
       }
 
       variantLabel = entry.size;
-      // Sized products always track stock per size, matching the product page.
-      available = entry.stock;
+      // The size list defines which variants are valid; track_quantity decides
+      // whether their stock is enforced. An untracked product is not inventory
+      // managed at all, so a configured size stays buyable at stock 0 -- the
+      // same rule the unsized branch below already applies to row.stock.
+      available = row.track_quantity ? entry.stock : Infinity;
     } else {
       variantLabel = row.sku || row.title;
       available = row.track_quantity ? Number(row.stock) || 0 : Infinity;

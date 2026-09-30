@@ -121,3 +121,47 @@ describe('cart and checkout display', () => {
     });
   }
 });
+
+describe('track_quantity and size availability', () => {
+  // Mirrors SizeSelector's disable rule. Stock only matters when the product is
+  // inventory managed; an untracked product's stored numbers are meaningless.
+  const isDisabled = (manageInventory, stock) => manageInventory && stock <= 0;
+
+  test('an untracked product keeps every configured size selectable at stock 0', () => {
+    for (const size of ['S', 'M', 'L', 'XL', 'XXL']) {
+      assert.equal(isDisabled(false, 0), false, `${size} must stay selectable`);
+    }
+  });
+
+  test('a tracked product still disables a zero-stock size', () => {
+    assert.equal(isDisabled(true, 0), true);
+  });
+
+  test('a tracked product still enables a size that has stock', () => {
+    assert.equal(isDisabled(true, 2), false);
+  });
+
+  test('SizeSelector gates the disabled state on inventory management', () => {
+    assert.match(sizeSelector, /manageInventory && stock <= 0/);
+  });
+
+  test('SizeSelector defaults to managed so an omitted prop cannot oversell', () => {
+    assert.match(sizeSelector, /manageInventory = true/);
+  });
+
+  test('the product page passes the real tracking flag into the selector', () => {
+    assert.match(productPage, /manageInventory=\{selectedVariant\?\.manage_inventory/);
+  });
+
+  // The regression itself: cartVariant used to hardcode manage_inventory: true,
+  // which made useCart enforce stock on a product that tracks none.
+  test('the cart variant inherits manage_inventory instead of forcing it true', () => {
+    assert.match(productPage, /manage_inventory: selectedVariant\.manage_inventory/);
+    assert.doesNotMatch(productPage, /manage_inventory: true/);
+  });
+
+  test('stock hints stay gated on inventory management', () => {
+    assert.match(productPage, /isStockManaged && canAddToCart/);
+    assert.match(productPage, /isStockManaged && !canAddToCart/);
+  });
+});

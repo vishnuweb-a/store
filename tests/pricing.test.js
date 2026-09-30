@@ -34,6 +34,26 @@ const UNSIZED = {
   image_url: null,
 };
 
+// Sized but not inventory managed: the size list says which variants exist,
+// while the stored stock numbers are meaningless because nothing is tracked.
+// Every product imported by scripts/import-*.js lands in exactly this shape.
+const UNTRACKED_SIZED = {
+  id: 3,
+  title: 'Cable Knit Longline Shrug',
+  sku: 'WSHRG-010',
+  price: 1799,
+  discount_price: null,
+  sizes: [
+    { size: 'S', stock: 0 },
+    { size: 'M', stock: 0 },
+    { size: 'L', stock: 0 },
+  ],
+  stock: 0,
+  track_quantity: false,
+  active: true,
+  image_url: null,
+};
+
 const load = (rows) => async (ids) => rows.filter((row) => ids.includes(String(row.id)));
 
 const CUSTOMER = {
@@ -296,5 +316,77 @@ describe('carts saved before the Supabase migration', () => {
 
   test('quantity validation still runs on recognised lines', () => {
     assert.throws(() => normalizeItems([{ product_id: '1', quantity: 0 }]), /quantity/);
+  });
+});
+
+describe('track_quantity and sizes', () => {
+  // CASE 2: untracked + sized. Stock 0 must not block the sale, because the
+  // product is not inventory managed at all. This is the regression that made
+  // adding size labels to an untracked product silently unbuyable.
+  test('sells an untracked sized product whose every size reads stock 0', async () => {
+    const { items } = await priceOrder([{ product_id: '3', size: 'M', quantity: 1 }], {
+      load: load([UNTRACKED_SIZED]),
+    });
+
+    assert.equal(items[0].size, 'M');
+    assert.equal(items[0].variant_id, 'variant_3_M');
+  });
+
+  test('does not cap quantity on an untracked sized product', async () => {
+    const { items } = await priceOrder([{ product_id: '3', size: 'L', quantity: 5 }], {
+      load: load([UNTRACKED_SIZED]),
+    });
+
+    assert.equal(items[0].quantity, 5);
+  });
+
+  // Not tracking inventory is not a licence to invent variants: the size must
+  // still be one the product actually offers.
+  test('still rejects a size the untracked product does not offer', async () => {
+    await assert.rejects(
+      priceOrder([{ product_id: '3', size: 'XXL', quantity: 1 }], { load: load([UNTRACKED_SIZED]) }),
+      /not available/,
+    );
+  });
+
+  test('still requires a size for an untracked sized product', async () => {
+    await assert.rejects(
+      priceOrder([{ product_id: '3', size: null, quantity: 1 }], { load: load([UNTRACKED_SIZED]) }),
+      /choose a size/,
+    );
+  });
+
+  // CASE 1: tracked + sized. Enforcement must be untouched by the fix.
+  test('still enforces per-size stock when the product is tracked', async () => {
+    await assert.rejects(
+      priceOrder([{ product_id: '1', size: 'L', quantity: 1 }], { load: load([SHIRT]) }),
+      /out of stock/,
+    );
+  });
+
+  test('still allows a tracked size that has stock', async () => {
+    const { items } = await priceOrder([{ product_id: '1', size: 'M', quantity: 5 }], {
+      load: load([SHIRT]),
+    });
+
+    assert.equal(items[0].size, 'M');
+  });
+
+  // CASE 4: tracked + unsized keeps using row-level stock.
+  test('still enforces row stock for a tracked unsized product', async () => {
+    await assert.rejects(
+      priceOrder([{ product_id: '2', size: null, quantity: 4 }], { load: load([UNSIZED]) }),
+      /Only 3 left/,
+    );
+  });
+
+  // CASE 3: untracked + unsized is the pre-existing behaviour, unchanged.
+  test('still sells an untracked unsized product at stock 0', async () => {
+    const { items } = await priceOrder([{ product_id: '2', size: null, quantity: 9 }], {
+      load: load([{ ...UNSIZED, stock: 0, track_quantity: false }]),
+    });
+
+    assert.equal(items[0].size, null);
+    assert.equal(items[0].quantity, 9);
   });
 });
