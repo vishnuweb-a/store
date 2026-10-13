@@ -13,7 +13,7 @@ import {
   hasInnerFailure,
   parseAirpayResponse,
 } from '../api/_lib/airpay.js';
-import { airpayConfig } from '../api/_lib/config.js';
+import { loadAirpayConfig } from '../api/_lib/config.js';
 import { checksum, decrypt, encrypt, encryptionKey, privateKey } from '../api/_lib/crypto.js';
 
 const ENV = {
@@ -65,18 +65,18 @@ function stubFetch(response) {
 
 describe('buildEnvelope', () => {
   test('sends merchant_id, encdata and checksum only', () => {
-    const envelope = buildEnvelope({ a: '1' }, airpayConfig());
+    const envelope = buildEnvelope({ a: '1' }, loadAirpayConfig(1));
 
     assert.deepEqual(Object.keys(envelope).sort(), ['checksum', 'encdata', 'merchant_id']);
   });
 
   test('does NOT send privatekey — that belongs to the transactional APIs', () => {
-    assert.equal(buildEnvelope({ a: '1' }, airpayConfig()).privatekey, undefined);
+    assert.equal(buildEnvelope({ a: '1' }, loadAirpayConfig(1)).privatekey, undefined);
   });
 
   test('encrypts the fields so no credential travels in the clear', () => {
     const fields = { client_id: 'client-id', client_secret: 'client-secret' };
-    const envelope = buildEnvelope(fields, airpayConfig());
+    const envelope = buildEnvelope(fields, loadAirpayConfig(1));
 
     assert.ok(!envelope.encdata.includes('client-secret'));
     assert.deepEqual(JSON.parse(decrypt(envelope.encdata, KEY)), fields);
@@ -85,20 +85,20 @@ describe('buildEnvelope', () => {
   test('checksums the plaintext fields, not the ciphertext', () => {
     const fields = { b: '2', a: '1' };
 
-    assert.equal(buildEnvelope(fields, airpayConfig()).checksum, checksum(fields));
+    assert.equal(buildEnvelope(fields, loadAirpayConfig(1)).checksum, checksum(fields));
   });
 
 });
 
 describe('buildSignedEnvelope', () => {
   test('adds privatekey for the token-authenticated APIs', () => {
-    const envelope = buildSignedEnvelope({ a: '1' }, airpayConfig());
+    const envelope = buildSignedEnvelope({ a: '1' }, loadAirpayConfig(1));
 
     assert.deepEqual(Object.keys(envelope).sort(), ['checksum', 'encdata', 'merchant_id', 'privatekey']);
   });
 
   test('derives privatekey from AIRPAY_API_KEY, not AIRPAY_SECRET_KEY', () => {
-    const envelope = buildSignedEnvelope({}, airpayConfig());
+    const envelope = buildSignedEnvelope({}, loadAirpayConfig(1));
 
     assert.equal(
       envelope.privatekey,
@@ -157,7 +157,7 @@ describe('getAccessToken', () => {
   test('posts only merchant_id, encdata and checksum', async () => {
     const calls = stubFetch({ text: JSON.stringify({ access_token: 'tok', expires_in: 600 }) });
 
-    await getAccessToken();
+    await getAccessToken(1);
 
     assert.deepEqual(Object.keys(calls[0].body).sort(), ['checksum', 'encdata', 'merchant_id']);
   });
@@ -165,7 +165,7 @@ describe('getAccessToken', () => {
   test('sends the documented OAuth fields, encrypted', async () => {
     const calls = stubFetch({ text: JSON.stringify({ access_token: 'tok', expires_in: 600 }) });
 
-    await getAccessToken();
+    await getAccessToken(1);
 
     const sent = JSON.parse(decrypt(calls[0].body.encdata, KEY));
 
@@ -182,7 +182,7 @@ describe('getAccessToken', () => {
   test('returns the token and the expiry Airpay reported', async () => {
     stubFetch({ text: JSON.stringify({ access_token: 'tok', expires_in: 900 }) });
 
-    const result = await getAccessToken();
+    const result = await getAccessToken(1);
 
     assert.equal(result.accessToken, 'tok');
     // The returned expiry is used, not a hardcoded assumption.
@@ -193,7 +193,7 @@ describe('getAccessToken', () => {
   test('finds the token when Airpay nests it', async () => {
     stubFetch({ text: JSON.stringify({ status: 200, data: { response: { access_token: 'tok', expires_in: 120 } } }) });
 
-    const result = await getAccessToken();
+    const result = await getAccessToken(1);
 
     assert.equal(result.accessToken, 'tok');
     assert.equal(result.expiresIn, 120);
@@ -204,7 +204,7 @@ describe('getAccessToken', () => {
       text: JSON.stringify({ success: true, encdata: encrypt(JSON.stringify({ access_token: 'tok', expires_in: 300 }), KEY) }),
     });
 
-    assert.equal((await getAccessToken()).accessToken, 'tok');
+    assert.equal((await getAccessToken(1)).accessToken, 'tok');
   });
 
   test('fails when the outer response says success but data.success is false', async () => {
@@ -219,7 +219,7 @@ describe('getAccessToken', () => {
       }),
     });
 
-    await assert.rejects(getAccessToken(), /authentication failed/);
+    await assert.rejects(getAccessToken(1), /authentication failed/);
   });
 
   test('rejects an inner failure even when a token-like field is present', async () => {
@@ -227,7 +227,7 @@ describe('getAccessToken', () => {
       text: JSON.stringify({ status: 'success', data: { success: false, access_token: 'not-a-real-token' } }),
     });
 
-    await assert.rejects(getAccessToken(), /authentication failed/);
+    await assert.rejects(getAccessToken(1), /authentication failed/);
   });
 
   test('fails when a 200 with success:true carries no token', async () => {
@@ -235,31 +235,31 @@ describe('getAccessToken', () => {
     // authentication result.
     stubFetch({ text: JSON.stringify({ success: true, status: 200, message: 'Invalid credentials' }) });
 
-    await assert.rejects(getAccessToken(), /authentication failed/);
+    await assert.rejects(getAccessToken(1), /authentication failed/);
   });
 
   test('fails on an HTTP error', async () => {
     stubFetch({ ok: false, status: 401, text: 'Unauthorized' });
 
-    await assert.rejects(getAccessToken(), /authentication failed/);
+    await assert.rejects(getAccessToken(1), /authentication failed/);
   });
 
   test('fails on an empty token', async () => {
     stubFetch({ text: JSON.stringify({ access_token: '   ' }) });
 
-    await assert.rejects(getAccessToken(), /authentication failed/);
+    await assert.rejects(getAccessToken(1), /authentication failed/);
   });
 
   test('falls back to a short expiry when Airpay omits one', async () => {
     stubFetch({ text: JSON.stringify({ access_token: 'tok' }) });
 
-    assert.equal((await getAccessToken()).expiresIn, 300);
+    assert.equal((await getAccessToken(1)).expiresIn, 300);
   });
 
   test('never puts a credential in the error it raises', async () => {
     stubFetch({ text: JSON.stringify({ success: false, echo: 'client-secret' }) });
 
-    const error = await getAccessToken().then(
+    const error = await getAccessToken(1).then(
       () => null,
       (caught) => caught,
     );
@@ -275,7 +275,7 @@ describe('getAccessToken', () => {
   test('reports missing configuration without naming the value', async () => {
     delete process.env.AIRPAY_SECRET_KEY;
 
-    const error = await getAccessToken().then(
+    const error = await getAccessToken(1).then(
       () => null,
       (caught) => caught,
     );
@@ -289,7 +289,7 @@ describe('upstream failure diagnostics', () => {
   test('sends a User-Agent, since WAFs 403 anonymous clients', async () => {
     const calls = stubFetch({ text: JSON.stringify({ access_token: 'tok', expires_in: 60 }) });
 
-    await getAccessToken();
+    await getAccessToken(1);
 
     assert.ok(calls[0].options.headers['User-Agent']);
   });
@@ -297,7 +297,7 @@ describe('upstream failure diagnostics', () => {
   test('captures the response body on a non-2xx so the cause is identifiable', async () => {
     stubFetch({ ok: false, status: 403, text: '<html>Access Denied: IP not whitelisted</html>' });
 
-    const error = await getAccessToken().then(
+    const error = await getAccessToken(1).then(
       () => null,
       (caught) => caught,
     );
@@ -309,7 +309,7 @@ describe('upstream failure diagnostics', () => {
   test('scrubs credentials out of a body that echoes them back', async () => {
     stubFetch({ ok: false, status: 403, text: `denied for client-secret and api-key` });
 
-    const error = await getAccessToken().then(
+    const error = await getAccessToken(1).then(
       () => null,
       (caught) => caught,
     );
@@ -325,7 +325,7 @@ describe('upstream failure diagnostics', () => {
   test('truncates a large body rather than logging all of it', async () => {
     stubFetch({ ok: false, status: 502, text: 'x'.repeat(50_000) });
 
-    const error = await getAccessToken().then(
+    const error = await getAccessToken(1).then(
       () => null,
       (caught) => caught,
     );
@@ -338,7 +338,7 @@ describe('request encoding', () => {
   test('posts the envelope form-encoded, not as JSON', async () => {
     const calls = stubFetch({ text: JSON.stringify({ access_token: 'tok', expires_in: 60 }) });
 
-    await getAccessToken();
+    await getAccessToken(1);
 
     // Airpay reads these as POST form fields; JSON produced
     // "403 Forbidden: Access is denied. Parameters are required."
@@ -350,7 +350,7 @@ describe('request encoding', () => {
   test('the form body still carries all three envelope fields', async () => {
     const calls = stubFetch({ text: JSON.stringify({ access_token: 'tok' }) });
 
-    await getAccessToken();
+    await getAccessToken(1);
 
     assert.deepEqual(Object.keys(calls[0].body).sort(), ['checksum', 'encdata', 'merchant_id']);
   });
@@ -358,7 +358,7 @@ describe('request encoding', () => {
   test('encdata survives form encoding intact', async () => {
     const calls = stubFetch({ text: JSON.stringify({ access_token: 'tok' }) });
 
-    await getAccessToken();
+    await getAccessToken(1);
 
     // base64 contains + / = which must round-trip through the encoding.
     assert.deepEqual(JSON.parse(decrypt(calls[0].body.encdata, KEY)), {

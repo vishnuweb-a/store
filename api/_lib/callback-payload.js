@@ -69,7 +69,153 @@ export function unwrapEnvelope(payload, key) {
 
   // Merged, not replaced: the outer merchant_id stays available, and the
   // decoded fields become visible to the existing extractors unchanged.
-  return { payload: { ...payload, ...decoded }, enveloped: true, unwrapped: true };
+  return { payload: { ...payload, ...decoded }, enveloped: true, unwrapped: true, decoded };
+}
+
+/** Field names that mark a decoded envelope as a genuine Airpay callback. */
+const RECOGNISED_CALLBACK_KEYS = [
+  'mercid',
+  'merchant_id',
+  'transactionid',
+  'aptransactionid',
+  'ap_transactionid',
+  'orderid',
+  'customvar',
+  'transactionstatus',
+  'transaction_status',
+  'transactionpaymentstatus',
+  'transaction_payment_status',
+];
+
+const MERCHANT_ID_KEYS = ['merchant_id', 'mercid', 'merchantid'];
+
+/** Every merchant id a payload states, under any of its spellings. */
+function statedMerchantIds(payload) {
+  if (!payload || typeof payload !== 'object') {
+    return [];
+  }
+
+  const found = new Set();
+
+  for (const [key, value] of Object.entries(payload)) {
+    if (MERCHANT_ID_KEYS.includes(key.toLowerCase()) && value !== null && value !== undefined && value !== '') {
+      found.add(String(value).trim());
+    }
+  }
+
+  return [...found];
+}
+
+/**
+ * Works out which configured Airpay merchant a callback belongs to, and opens
+ * its envelope with that merchant's key.
+ *
+ * Order of trust:
+ *
+ *   1. The key that decrypts the envelope. Only the merchant's own key opens
+ *      it, so this cannot be asserted by whoever sent the request.
+ *   2. A stated merchant id equal to a server-configured MID. A MID is public,
+ *      so on its own this is a hint: it narrows which key is tried and which
+ *      account an external reference may be asked of, and nothing more.
+ *
+ * Nothing here is sufficient to settle an order. A local order is always
+ * verified with the merchant recorded on the order itself — this result can
+ * only withhold that, when it names a different one.
+ *
+ * Total by contract, like unwrapEnvelope(): never throws, and on any failure
+ * returns the payload untouched.
+ *
+ * @param {Record<string, unknown>} payload - As received
+ * @param {{merchant: 1|2, mid: string, key: string}[]} merchants - Configured
+ *   merchants, from server configuration only
+ * @returns {{payload: Record<string, unknown>, enveloped: boolean, unwrapped: boolean,
+ *   merchant: 1|2|null, basis: 'envelope'|'stated_mid'|'none', statedMids: string[],
+ *   foreign: boolean, reason?: string}}
+ */
+export function resolveCallback(payload, merchants = []) {
+  const outerMids = statedMerchantIds(payload);
+  const named = merchants.filter((entry) => outerMids.includes(String(entry.mid).trim()));
+  // A callback naming a MID that is none of ours is another merchant's.
+  const foreign = outerMids.length > 0 && named.length === 0;
+  const hinted = named.length === 1 ? named[0].merchant : null;
+
+  const base = {
+    payload,
+    enveloped: false,
+    unwrapped: false,
+    merchant: hinted,
+    basis: hinted ? 'stated_mid' : 'none',
+    statedMids: outerMids,
+    foreign,
+  };
+
+  const envelope = pick(payload, ['response', 'encdata', 'data']);
+
+  if (typeof envelope !== 'string' || envelope.length <= 16) {
+    return base;
+  }
+
+  if (merchants.length === 0) {
+    return { ...base, enveloped: true, reason: 'no key configured' };
+  }
+
+  if (foreign) {
+    return { ...base, enveloped: true, reason: 'unknown merchant' };
+  }
+
+  // A stated MID narrows the candidates; without one, each configured
+  // merchant's key is tried and the ciphertext decides.
+  const candidates = named.length > 0 ? named : merchants;
+
+  for (const candidate of candidates) {
+    const opened = unwrapEnvelope(payload, candidate.key);
+
+    if (!opened.unwrapped) {
+      continue;
+    }
+
+    // A wrong key occasionally "decrypts" to noise that survives padding
+    // removal. When more than one key is in play, the result must also read
+    // as a callback before that merchant is believed.
+    if (candidates.length > 1 && pick(opened.decoded, RECOGNISED_CALLBACK_KEYS) === undefined) {
+      continue;
+    }
+
+    return {
+      payload: opened.payload,
+      enveloped: true,
+      unwrapped: true,
+      merchant: candidate.merchant,
+      basis: 'envelope',
+      statedMids: statedMerchantIds(opened.payload),
+      foreign: false,
+    };
+  }
+
+  return { ...base, enveloped: true, reason: 'decrypt failed' };
+}
+
+/**
+ * The Airpay order id of a callback, in whatever format its owner generated.
+ *
+ * Unlike extractOrderRef() this is not restricted to Frontiva's own reference
+ * format, because it exists for payments that belong to another system. It is
+ * therefore never used to look anything up in the database — only to ask
+ * Airpay about the order and to label log lines.
+ *
+ * @param {Record<string, unknown>} payload
+ * @returns {string|null}
+ */
+export function extractGatewayOrderId(payload) {
+  const value = pick(payload, ['orderid', 'order_id', 'merchant_order_id', 'transactionid', 'customvar']);
+
+  if (typeof value !== 'string' && typeof value !== 'number') {
+    return null;
+  }
+
+  const trimmed = String(value).trim();
+
+  return /^[A-Za-z0-9_.-]{4,64}$/.test(trimmed) ? trimmed : null;
 }
 
 /** Case-insensitive lookup across a list of candidate field names. */

@@ -8,6 +8,10 @@
       "source": "/callback/cpm/arp/collection",
       "destination": "/api/payments/callback"
     },
+    {
+      "source": "/callback/cpm/arp_frontiva/collection",
+      "destination": "/api/payments/callback"
+    },
     { "source": "/api/(.*)", "destination": "/api/$1" },
     { "source": "/(.*)", "destination": "/index.html" }
   ],

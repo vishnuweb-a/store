@@ -5,12 +5,16 @@
  * Credential roles (do not swap these):
  *   AIRPAY_SECRET_KEY -> OAuth2 client_secret
  *   AIRPAY_API_KEY    -> privatekey derivation secret
+ *
+ * Two merchant accounts are supported. Every network operation here takes the
+ * merchant it is for and loads that merchant's credentials alone; nothing is
+ * cached between calls, so a token or key cannot cross accounts.
  */
 import {
   AIRPAY_OAUTH_URL,
   AIRPAY_PAY_URL,
   AIRPAY_TIMEOUT_MS,
-  airpayConfig,
+  loadAirpayConfig,
 } from './config.js';
 import { checksum, decrypt, encrypt, encryptionKey, privateKey } from './crypto.js';
 import { fetchWithTimeout, logEvent, scrubSecrets } from './http.js';
@@ -64,7 +68,7 @@ class AirpayError extends Error {
  * APIs, which authenticate with the issued token instead.
  *
  * @param {Record<string, string|number>} fields - Plaintext request fields
- * @param {ReturnType<typeof airpayConfig>} config
+ * @param {ReturnType<typeof loadAirpayConfig>} config
  * @returns {{merchant_id: string, encdata: string, checksum: string}}
  */
 export function buildEnvelope(fields, config) {
@@ -82,7 +86,7 @@ export function buildEnvelope(fields, config) {
  * carry the derived privatekey.
  *
  * @param {Record<string, string|number>} fields
- * @param {ReturnType<typeof airpayConfig>} config
+ * @param {ReturnType<typeof loadAirpayConfig>} config
  * @returns {{merchant_id: string, encdata: string, checksum: string, privatekey: string}}
  */
 export function buildSignedEnvelope(fields, config) {
@@ -193,10 +197,11 @@ export function hasInnerFailure(payload) {
  * usable access_token AND does not carry an inner failure flag. A transport
  * success is not an authentication success.
  *
+ * @param {1|2} merchant - Whose credentials to authenticate with
  * @returns {Promise<{accessToken: string, expiresIn: number, expiresAt: number}>}
  */
-export async function getAccessToken() {
-  const config = airpayConfig();
+export async function getAccessToken(merchant) {
+  const config = loadAirpayConfig(merchant);
   const key = encryptionKey(config.username, config.password);
 
   const fields = {
@@ -225,6 +230,7 @@ export async function getAccessToken() {
     const snippet = scrubSecrets(text);
 
     logEvent('airpay.oauth.http_error', {
+      merchant: config.merchant,
       status: response.status,
       content_type: response.headers?.get?.('content-type') ?? null,
       body: snippet,
@@ -237,7 +243,7 @@ export async function getAccessToken() {
 
   if (hasInnerFailure(payload)) {
     // The documented trap: outer status success, inner data.success false.
-    logEvent('airpay.oauth.inner_failure', { status: response.status });
+    logEvent('airpay.oauth.inner_failure', { merchant: config.merchant, status: response.status });
     throw new AirpayError('Airpay authentication failed', 'data.success was false');
   }
 
@@ -246,6 +252,7 @@ export async function getAccessToken() {
   if (typeof accessToken !== 'string' || !accessToken.trim()) {
     // Log the coarse shape only — an OAuth error body can echo credentials back.
     logEvent('airpay.oauth.no_token', {
+      merchant: config.merchant,
       status: response.status,
       keys: Object.keys(payload).join(','),
     });
@@ -273,11 +280,12 @@ export async function getAccessToken() {
  * @param {number} params.amountInCents - Server-derived amount
  * @param {{fullName: string, phone: string, address: string}} params.customer
  * @param {string} params.returnUrl
- * @param {string} params.accessToken
+ * @param {string} params.accessToken - Issued to the same merchant
+ * @param {1|2} params.merchant - Whose credentials sign and encrypt the fields
  * @returns {{action: string, fields: Record<string, string>}}
  */
-export function buildPaymentRequest({ orderRef, amountInCents, customer, returnUrl, accessToken }) {
-  const config = airpayConfig();
+export function buildPaymentRequest({ orderRef, amountInCents, customer, returnUrl, accessToken, merchant }) {
+  const config = loadAirpayConfig(merchant);
   const [firstName, ...rest] = customer.fullName.split(/\s+/);
 
   const fields = {
@@ -308,31 +316,69 @@ export function buildPaymentRequest({ orderRef, amountInCents, customer, returnU
   };
 }
 
+/** Names that can only mean the transaction's own status. */
+const TRANSACTION_STATUS_KEYS = ['transaction_status', 'transactionstatus', 'txnstatus'];
+
+/**
+ * Reads the transaction status out of an Order Confirmation response.
+ *
+ * Airpay's responses carry a transport-level `status` ("success", 200) on the
+ * outer object, which describes the API call and not the payment. A name that
+ * can only mean the transaction is therefore preferred at any depth; the bare
+ * `status` is a fallback, and is read from the inner result when there is one
+ * so the outer transport field cannot stand in for it.
+ *
+ * @param {Record<string, unknown>} payload
+ * @returns {unknown} undefined when no status can be identified
+ */
+function findTransactionStatus(payload) {
+  const specific = findField(payload, TRANSACTION_STATUS_KEYS);
+
+  if (specific !== undefined) {
+    return specific;
+  }
+
+  const inner = [payload?.decrypted, payload?.data, payload?.response].find(
+    (container) => container && typeof container === 'object',
+  );
+
+  return findField(inner || payload, ['status']);
+}
+
 /**
  * Asks Airpay what actually happened to an order. This — not the callback and
  * not the browser return — is what settlement is allowed to trust.
  *
- * Never throws: an unreachable or unreadable verification is reported as
- * `verified: false`, which the caller turns into requires_review, never paid.
+ * The question is asked with one merchant's credentials. An order placed on
+ * the other merchant is not visible to them, so the wrong merchant yields
+ * `verified: false`, never a result.
+ *
+ * Never throws: an unreachable, unreadable or ambiguous verification is
+ * reported as `verified: false`, which the caller turns into requires_review,
+ * never paid.
  *
  * @param {string} orderRef
- * @returns {Promise<{verified: boolean, status: string|null, amountInCents: number|null, transactionId: string|null, reason?: string}>}
+ * @param {1|2} merchant - The merchant the order was placed on
+ * @returns {Promise<{verified: boolean, status: string|null, amountInCents: number|null, transactionId: string|null, merchant: 1|2|null, reason?: string}>}
  */
-export async function confirmOrder(orderRef) {
+export async function confirmOrder(orderRef, merchant) {
   const unverified = (reason) => ({
     verified: false,
     status: null,
     amountInCents: null,
     transactionId: null,
+    merchant: null,
     reason,
   });
 
   let payload;
+  let config;
 
   try {
-    const config = airpayConfig();
+    config = loadAirpayConfig(merchant);
+
     const key = encryptionKey(config.username, config.password);
-    const { accessToken } = await getAccessToken();
+    const { accessToken } = await getAccessToken(config.merchant);
 
     const response = await fetchWithTimeout(
       `${verifyUrl()}?token=${encodeURIComponent(accessToken)}`,
@@ -359,15 +405,42 @@ export async function confirmOrder(orderRef) {
     return unverified(error?.isConfigError ? 'not configured' : 'verification unavailable');
   }
 
-  const status = findField(payload, [
-    'transaction_status',
-    'transactionstatus',
-    'txnstatus',
-    'status',
-  ]);
+  // A confirmation that names a different order or a different merchant is an
+  // answer to some other question. Absent echoes are tolerated; wrong ones
+  // are not.
+  const echoedOrder = findField(payload, ['orderid', 'order_id', 'merchant_order_id']);
+
+  if (echoedOrder !== undefined && String(echoedOrder).trim() !== String(orderRef).trim()) {
+    return unverified('confirmation is for a different order');
+  }
+
+  const echoedMid = findField(payload, ['merchant_id', 'mercid', 'merchantid']);
+
+  if (echoedMid !== undefined && String(echoedMid).trim() !== config.mid) {
+    return unverified('confirmation is for a different merchant');
+  }
+
+  const status = findTransactionStatus(payload);
 
   if (status === undefined) {
     return unverified('no transaction status in confirmation');
+  }
+
+  // Airpay reports the outcome twice. When both are present they must agree
+  // before a success is believed; a disagreement is ambiguous, and ambiguous
+  // is never paid.
+  const paymentStatus = findField(payload, [
+    'transaction_payment_status',
+    'transactionpaymentstatus',
+    'payment_status',
+  ]);
+
+  if (
+    paymentStatus !== undefined &&
+    classifyTransaction(status) === 'success' &&
+    classifyTransaction(paymentStatus) !== 'success'
+  ) {
+    return unverified('conflicting status fields in confirmation');
   }
 
   const amount = Number(findField(payload, ['amount', 'transaction_amount', 'txnamount']));
@@ -383,6 +456,40 @@ export async function confirmOrder(orderRef) {
     status: String(status),
     amountInCents: Number.isFinite(amount) ? Math.round(amount * 100) : null,
     transactionId: transactionId === undefined ? null : String(transactionId),
+    merchant: config.merchant,
+  };
+}
+
+/**
+ * Asks Airpay about an order reference that has no local order — a payment
+ * that belongs to another system sharing one of these merchant accounts.
+ *
+ * Read-only by construction: it calls confirmOrder() and nothing else, so it
+ * cannot create, settle or alter anything. When the merchant is not known each
+ * candidate is asked, and an answer is accepted only if exactly one of them
+ * recognises the order.
+ *
+ * @param {string} orderId - Airpay orderid as received
+ * @param {(1|2)[]} merchants - Candidates, from server configuration only
+ * @param {{confirm?: Function}} [deps] - Injectable I/O, for tests
+ * @returns {Promise<Awaited<ReturnType<typeof confirmOrder>>>}
+ */
+export async function confirmExternalOrder(orderId, merchants, deps = {}) {
+  const confirm = deps.confirm || confirmOrder;
+  const answers = await Promise.all(merchants.map((merchant) => confirm(orderId, merchant)));
+  const verified = answers.filter((answer) => answer.verified);
+
+  if (verified.length === 1) {
+    return verified[0];
+  }
+
+  return {
+    verified: false,
+    status: null,
+    amountInCents: null,
+    transactionId: null,
+    merchant: null,
+    reason: verified.length > 1 ? 'more than one merchant recognised the order' : 'no merchant confirmed the order',
   };
 }
 
