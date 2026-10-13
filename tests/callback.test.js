@@ -14,7 +14,7 @@ import {
   verifyMerchantId,
   verifySecureHash,
 } from '../api/_lib/callback-payload.js';
-import { CALLBACK_PATH } from '../api/_lib/config.js';
+import { CALLBACK_PATH, callbackPathFor } from '../api/_lib/config.js';
 import { encrypt, encryptionKey, sha256Hex } from '../api/_lib/crypto.js';
 import { parseBody, redact } from '../api/_lib/http.js';
 
@@ -287,7 +287,9 @@ describe('callback route and Vercel configuration', () => {
   test('the payment request sends the registered callback path as its return URL', () => {
     const create = readFileSync(new URL('../api/payments/create.js', import.meta.url), 'utf8');
 
-    assert.match(create, /returnUrl: `\$\{siteOrigin\(req\)\}\$\{CALLBACK_PATH\}`/);
+    // Per merchant now, and merchant 1 still resolves to the original path.
+    assert.match(create, /returnUrl: `\$\{siteOrigin\(req\)\}\$\{callbackPathFor\(merchant\)\}`/);
+    assert.equal(callbackPathFor(1), CALLBACK_PATH);
   });
 
   test('the handler serves both browser response and server IPN traffic', () => {
@@ -337,11 +339,12 @@ describe('order creation ordering', () => {
   test('authenticates with Airpay before writing a pending order', () => {
     // Otherwise an OAuth failure leaves an orphan `initiated` row that
     // reconciliation has to park in requires_review for a human.
-    assert.ok(create.indexOf('getAccessToken()') < create.indexOf('createPendingOrder('));
+    assert.ok(create.indexOf('getAccessToken(merchant)') > -1);
+    assert.ok(create.indexOf('getAccessToken(merchant)') < create.indexOf('createPendingOrder('));
   });
 
   test('still prices from Supabase before doing either', () => {
-    assert.ok(create.indexOf('priceOrder(') < create.indexOf('getAccessToken()'));
+    assert.ok(create.indexOf('priceOrder(') < create.indexOf('getAccessToken(merchant)'));
   });
 });
 

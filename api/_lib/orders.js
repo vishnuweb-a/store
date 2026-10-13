@@ -10,6 +10,7 @@
  * `status` column is mirrored from it so the admin table keeps rendering.
  */
 import { classifyTransaction, confirmOrder } from './airpay.js';
+import { parseMerchant } from './config.js';
 import { newOrderRef } from './crypto.js';
 import { logEvent } from './http.js';
 import { formatInr } from './pricing.js';
@@ -36,13 +37,23 @@ export const RECONCILABLE_STATUSES = ['initiated', 'processing', 'requires_revie
  * @param {{fullName: string, phone: string, address: string, landmark: string|null}} params.customer
  * @param {Object[]} params.items - Server-priced lines
  * @param {number} params.totalInCents - Server-derived total
+ * @param {1|2} [params.merchant] - Airpay merchant the payment is started on
  * @returns {Promise<{id: number, order_ref: string, created_at: string}>}
  */
-export async function createPendingOrder({ customer, items, totalInCents }) {
+export async function createPendingOrder({ customer, items, totalInCents, merchant = 1 }) {
   const orderRef = newOrderRef();
   const now = new Date().toISOString();
 
+  if (!parseMerchant(merchant)) {
+    throw new Error('Order could not be created');
+  }
+
   const [row] = await insert('orders', {
+    // Written only for merchant 2. A null airpay_merchant means merchant 1,
+    // which is what every order placed before the second account existed
+    // already carries — and it keeps merchant 1's insert identical to the one
+    // in production, so it does not depend on the new column existing.
+    ...(parseMerchant(merchant) === 2 ? { airpay_merchant: 2 } : {}),
     customer_name: customer.fullName,
     phone: customer.phone,
     address: customer.address,
@@ -79,6 +90,27 @@ export async function findOrderByRef(orderRef) {
   const [row] = await select('orders', `select=*&order_ref=eq.${encodeURIComponent(ref)}&limit=1`);
 
   return row || null;
+}
+
+/**
+ * The Airpay merchant an order was placed on, read from the server-written
+ * airpay_merchant column. Null (every order that predates the second account,
+ * and every merchant-1 order since) is merchant 1.
+ *
+ * A value that is present but is neither 1 nor 2 is not guessed at: null is
+ * returned and the caller refuses to settle.
+ *
+ * @param {Object} order
+ * @returns {1|2|null}
+ */
+export function merchantForOrder(order) {
+  const stored = order?.airpay_merchant;
+
+  if (stored === null || stored === undefined) {
+    return 1;
+  }
+
+  return parseMerchant(stored);
 }
 
 /**
@@ -190,13 +222,24 @@ export async function settleOrder(orderRef, deps = {}) {
     return { order, status: current, changed: false };
   }
 
+  const merchant = merchantForOrder(order);
+
+  if (!merchant) {
+    // The order names a merchant this code does not know. Asking the wrong
+    // account would prove nothing, so nothing is asked and nothing changes.
+    logEvent('payment.settle.unknown_merchant', { order_ref: orderRef });
+    return { order, status: current, changed: false, reason: 'unknown merchant' };
+  }
+
   const expectedInCents = Math.round(Number(order.total) * 100);
-  const confirmation = await confirm(orderRef);
+  // Asked of the merchant the order was placed on, and no other.
+  const confirmation = await confirm(orderRef, merchant);
   const decision = decideSettlement(confirmation, expectedInCents);
 
   if (decision.status !== 'paid') {
     logEvent('payment.settle.not_paid', {
       order_ref: orderRef,
+      merchant,
       decided: decision.status,
       reason: decision.reason,
       // Amounts are not secrets and are what an operator needs to triage.
@@ -252,7 +295,7 @@ export async function settleOrder(orderRef, deps = {}) {
     };
   }
 
-  logEvent('payment.settle.applied', { order_ref: orderRef, status: decision.status });
+  logEvent('payment.settle.applied', { order_ref: orderRef, merchant, status: decision.status });
 
   return { order: updated[0], status: decision.status, changed: true, reason: decision.reason };
 }

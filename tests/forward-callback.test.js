@@ -421,10 +421,11 @@ describe('forwarding is independent of parsing', () => {
   });
 
   test('parsing helpers used before the relay are total functions', () => {
-    // unwrapEnvelope and extractCallbackFields must never throw, or the relay
-    // below them would be skipped.
-    assert.match(callbackSource, /const envelope = unwrapEnvelope\(received, encryptionKeyOrNull\(\)\)/);
-    assert.match(callbackSource, /function encryptionKeyOrNull\(\)[\s\S]*?catch \{[\s\S]*?return null;/);
+    // resolveCallback and extractCallbackFields must never throw, or the relay
+    // below them would be skipped. The key lookup, now across both merchants,
+    // degrades to "no keys" rather than throwing.
+    assert.match(callbackSource, /delivery = resolveCallback\(received, merchantKeysOrEmpty\(\)\)/);
+    assert.match(callbackSource, /function merchantKeysOrEmpty\(\)[\s\S]*?catch \{[\s\S]*?return \[\];/);
   });
 });
 

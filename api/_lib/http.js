@@ -146,6 +146,12 @@ export function scrubSecrets(text, limit = 300) {
     process.env.AIRPAY_PASSWORD,
     process.env.AIRPAY_USERNAME,
     process.env.AIRPAY_CLIENT_ID,
+    // Merchant 2's credentials are scrubbed alongside merchant 1's.
+    process.env.AIRPAY_SECRET_KEY_2,
+    process.env.AIRPAY_API_KEY_2,
+    process.env.AIRPAY_PASSWORD_2,
+    process.env.AIRPAY_USERNAME_2,
+    process.env.AIRPAY_CLIENT_ID_2,
     process.env.SUPABASE_SERVICE_ROLE,
     process.env.CRON_SECRET,
   ].filter((value) => value && String(value).length >= 4);
