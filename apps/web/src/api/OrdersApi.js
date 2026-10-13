@@ -85,22 +85,52 @@ export async function createCodOrder({ customer, cartItems }) {
   return order;
 }
 
+/** The online payment gateways a customer can be offered, by number. */
+export const PAYMENT_GATEWAYS = [1, 2];
+
+/**
+ * Asks the server which online payment gateways are available right now.
+ *
+ * The answer is a list of gateway numbers and nothing else. If it cannot be
+ * read, gateway 1 alone is assumed — the single online option the checkout has
+ * always had — so a failure here never takes online payment away.
+ *
+ * @returns {Promise<number[]>}
+ */
+export async function getPaymentGateways() {
+  try {
+    const response = await fetch('/api/payments/options');
+    const payload = await response.json();
+    const gateways = PAYMENT_GATEWAYS.filter((gateway) => payload?.merchants?.includes(gateway));
+
+    return response.ok && gateways.length > 0 ? gateways : [1];
+  } catch (error) {
+    return [1];
+  }
+}
+
 /**
  * Starts an online (Airpay) payment for the current cart.
  *
- * Only *what* is being bought is sent — ids, sizes and quantities. The server
- * prices the order from Supabase and creates the pending order, so nothing the
- * browser says about money is trusted. The response is an already-encrypted
- * form payload; submitPayment() below hands it to Airpay.
+ * Only *what* is being bought is sent — ids, sizes and quantities — plus which
+ * gateway the customer chose, as a number. The server prices the order from
+ * Supabase and creates the pending order, so nothing the browser says about
+ * money is trusted. The response is an already-encrypted form payload;
+ * submitPayment() below hands it to Airpay.
  *
  * @param {Object} params
  * @param {{fullName: string, phone: string, address: string, landmark: string}} params.customer
  * @param {Array} params.cartItems - Items from the cart context
+ * @param {number} [params.merchant] - Chosen gateway, 1 or 2
  * @returns {Promise<{order_ref: string, action: string, fields: Record<string, string>}>}
  */
-export async function createOnlinePayment({ customer, cartItems }) {
+export async function createOnlinePayment({ customer, cartItems, merchant = 1 }) {
   if (!cartItems || cartItems.length === 0) {
     throw new Error('Cannot place an order with an empty cart.');
+  }
+
+  if (!PAYMENT_GATEWAYS.includes(merchant)) {
+    throw new Error('Please choose a payment gateway.');
   }
 
   const items = cartItems.map((item) => ({
@@ -114,7 +144,7 @@ export async function createOnlinePayment({ customer, cartItems }) {
   const response = await fetch('/api/payments/create', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ customer, items }),
+    body: JSON.stringify({ customer, items, merchant }),
   });
 
   let payload = null;

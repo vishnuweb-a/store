@@ -9,7 +9,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { useCart } from '@/hooks/useCart';
 import { useToast } from '@/hooks/use-toast';
 import { formatCurrency, getCartItemSize } from '@/api/EcommerceApi';
-import { createCodOrder, createOnlinePayment, submitPayment } from '@/api/OrdersApi';
+import { createCodOrder, createOnlinePayment, getPaymentGateways, submitPayment } from '@/api/OrdersApi';
 import Header from '@/components/Header';
 import Footer from '@/components/Footer';
 import ShoppingCart from '@/components/ShoppingCart';
@@ -29,10 +29,20 @@ const PAYMENT_METHODS = [
   },
 ];
 
+/** The online payment gateways, by the number the server knows them as. */
+const PAYMENT_GATEWAYS = [
+  { id: 1, label: 'Pay with Airpay 1' },
+  { id: 2, label: 'Pay with Airpay 2' },
+];
+
 const CheckoutPage = () => {
   const [isCartOpen, setIsCartOpen] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState('cod');
+  // Gateway 1 is the only one assumed until the server says otherwise, so the
+  // page behaves as it always has if the second gateway is not available.
+  const [availableGateways, setAvailableGateways] = useState([1]);
+  const [gateway, setGateway] = useState(1);
   const [rejectedItems, setRejectedItems] = useState([]);
   const [errors, setErrors] = useState({});
   const orderPlacedRef = useRef(false);
@@ -52,6 +62,22 @@ const CheckoutPage = () => {
       navigate('/cart');
     }
   }, [cartItems, navigate]);
+
+  useEffect(() => {
+    let isCurrent = true;
+
+    getPaymentGateways().then((gateways) => {
+      if (!isCurrent) return;
+
+      setAvailableGateways(gateways);
+      // Keep the customer's choice if it is still on offer.
+      setGateway((current) => (gateways.includes(current) ? current : gateways[0]));
+    });
+
+    return () => {
+      isCurrent = false;
+    };
+  }, []);
 
   const currencyInfo = cartItems[0]?.variant.currency_info;
   const totalInCents = cartItems.reduce((total, item) => {
@@ -73,6 +99,7 @@ const CheckoutPage = () => {
   const staleItems = rejectedItems.length > 0 ? rejectedItems : unpriceableItems;
 
   const isOnline = paymentMethod === 'online';
+  const gatewayOptions = PAYMENT_GATEWAYS.filter((option) => availableGateways.includes(option.id));
   const selectedMethod = PAYMENT_METHODS.find((method) => method.id === paymentMethod) ?? PAYMENT_METHODS[0];
 
   const validate = () => {
@@ -92,6 +119,10 @@ const CheckoutPage = () => {
 
     if (!customerInfo.address.trim()) {
       nextErrors.address = 'Delivery address is required.';
+    }
+
+    if (paymentMethod === 'online' && !availableGateways.includes(gateway)) {
+      nextErrors.gateway = 'Please choose a payment gateway.';
     }
 
     return nextErrors;
@@ -127,7 +158,7 @@ const CheckoutPage = () => {
 
     if (paymentMethod === 'online') {
       try {
-        const payment = await createOnlinePayment({ customer: customerInfo, cartItems });
+        const payment = await createOnlinePayment({ customer: customerInfo, cartItems, merchant: gateway });
 
         // The cart is deliberately left intact: the payment can still fail or
         // be abandoned, and the customer should come back to a full cart.
@@ -348,6 +379,42 @@ const CheckoutPage = () => {
                         );
                       })}
                     </div>
+                    {isOnline && gatewayOptions.length > 1 && (
+                      <div className="mt-4 pl-4 border-l-2 border-primary/30">
+                        <p id="gateway-label" className="text-sm font-medium mb-3 text-card-foreground">
+                          Select Payment Gateway
+                        </p>
+                        <div className="space-y-2" role="radiogroup" aria-labelledby="gateway-label">
+                          {gatewayOptions.map(({ id, label }) => {
+                            const isSelected = gateway === id;
+
+                            return (
+                              <button
+                                key={id}
+                                type="button"
+                                role="radio"
+                                aria-checked={isSelected}
+                                disabled={isProcessing}
+                                onClick={() => {
+                                  setGateway(id);
+                                  setErrors(({ gateway: _removed, ...rest }) => rest);
+                                }}
+                                className={`w-full text-left flex items-center gap-3 p-3 rounded-lg border-2 transition-colors ${
+                                  isSelected ? 'border-primary bg-accent/50' : 'border-border hover:bg-muted'
+                                }`}
+                              >
+                                <CreditCard className="h-5 w-5 text-primary shrink-0" aria-hidden="true" />
+                                <span className="flex-grow font-medium text-card-foreground">{label}</span>
+                                {isSelected && (
+                                  <CheckCircle2 className="h-5 w-5 text-primary shrink-0" aria-hidden="true" />
+                                )}
+                              </button>
+                            );
+                          })}
+                        </div>
+                        {fieldError('gateway')}
+                      </div>
+                    )}
                   </motion.div>
                 </div>
 
