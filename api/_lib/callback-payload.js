@@ -126,10 +126,10 @@ function statedMerchantIds(payload) {
  * returns the payload untouched.
  *
  * @param {Record<string, unknown>} payload - As received
- * @param {{merchant: 1|2, mid: string, key: string}[]} merchants - Configured
+ * @param {{merchant: 1|2|3, mid: string, key: string}[]} merchants - Configured
  *   merchants, from server configuration only
  * @returns {{payload: Record<string, unknown>, enveloped: boolean, unwrapped: boolean,
- *   merchant: 1|2|null, basis: 'envelope'|'stated_mid'|'none', statedMids: string[],
+ *   merchant: 1|2|3|null, basis: 'envelope'|'stated_mid'|'none', statedMids: string[],
  *   foreign: boolean, reason?: string}}
  */
 export function resolveCallback(payload, merchants = []) {

@@ -9,8 +9,8 @@
  * credentials, key derivation, encryption and checksum without creating a
  * transaction or moving any money.
  *
- * Readiness is decided by merchant 1 and the shared settings alone. Merchant 2
- * is reported alongside, but an unconfigured merchant 2 is not a fault.
+ * Readiness is decided by merchant 1 and the shared settings alone. Merchants 2
+ * and 3 are reported alongside, but an unconfigured one is not a fault.
  */
 import { getAccessToken } from './_lib/airpay.js';
 import {
@@ -86,22 +86,23 @@ export default async function handler(req, res) {
     return;
   }
 
-  // Merchant 2's probe is reported on its own and never decides the status:
-  // a fault on the second account must not make the first look down.
-  let oauth2;
+  // Each additional merchant's probe is reported on its own, as
+  // oauth_merchant_<n>, and never decides the status: a fault on one account
+  // must not make another look down.
+  const probes = await Promise.all(
+    MERCHANTS.filter((merchant) => merchant !== 1 && merchants[merchant].configured).map(async (merchant) => {
+      try {
+        const { expiresIn } = await getAccessToken(merchant);
 
-  if (merchants[2].configured) {
-    try {
-      const { expiresIn } = await getAccessToken(2);
+        return [`oauth_merchant_${merchant}`, { ok: true, expires_in: expiresIn }];
+      } catch (error) {
+        logEvent('payment.health.oauth_failed', { merchant, kind: 'airpay', detail: error?.detail });
+        return [`oauth_merchant_${merchant}`, { ok: false, reason: error?.detail || 'authentication failed' }];
+      }
+    }),
+  );
 
-      oauth2 = { ok: true, expires_in: expiresIn };
-    } catch (error) {
-      logEvent('payment.health.oauth_failed', { merchant: 2, kind: 'airpay', detail: error?.detail });
-      oauth2 = { ok: false, reason: error?.detail || 'authentication failed' };
-    }
-  }
-
-  const oauthByMerchant = oauth2 ? { oauth_merchant_2: oauth2 } : {};
+  const oauthByMerchant = Object.fromEntries(probes);
 
   try {
     const { expiresIn } = await getAccessToken(1);

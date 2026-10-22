@@ -102,14 +102,14 @@ alter table public.orders add column if not exists updated_at timestamptz;
 
 -- Which Airpay merchant account the payment was started on. Null means
 -- merchant 1 (every order before the second account, and every merchant 1
--- order since); 2 means merchant 2. Standalone copy, with the full reasoning:
--- migrations-airpay-merchant.sql.
+-- order since); 2 and 3 mean merchants 2 and 3. Standalone copies, with the
+-- full reasoning: migrations-airpay-merchant.sql, migrations-airpay-merchant-3.sql.
 alter table public.orders add column if not exists airpay_merchant smallint;
 
 alter table public.orders drop constraint if exists orders_airpay_merchant_check;
 alter table public.orders
   add constraint orders_airpay_merchant_check
-  check (airpay_merchant is null or airpay_merchant in (1, 2));
+  check (airpay_merchant is null or airpay_merchant in (1, 2, 3));
 
 -- Unique rather than a primary key so Cash on Delivery rows, which have no
 -- order_ref, are unaffected: Postgres allows unlimited nulls in a unique index.

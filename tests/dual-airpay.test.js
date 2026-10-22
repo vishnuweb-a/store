@@ -32,6 +32,7 @@ import { LOOP_GUARD_HEADER, forwardCallback } from '../api/_lib/forward-callback
 import { ONLINE_PAYMENT_METHOD, merchantForOrder, settleOrder } from '../api/_lib/orders.js';
 import callbackHandler from '../api/payments/callback.js';
 import createHandler from '../api/payments/create.js';
+import healthHandler from '../api/health.js';
 import optionsHandler from '../api/payments/options.js';
 import statusHandler from '../api/payments/status.js';
 
@@ -53,6 +54,15 @@ const M2 = {
   AIRPAY_PASSWORD_2: 'pass-two',
 };
 
+const M3 = {
+  AIRPAY_MID_3: '333333',
+  AIRPAY_CLIENT_ID_3: 'client-three',
+  AIRPAY_SECRET_KEY_3: 'secret-three',
+  AIRPAY_API_KEY_3: 'apikey-three',
+  AIRPAY_USERNAME_3: 'user-three',
+  AIRPAY_PASSWORD_3: 'pass-three',
+};
+
 const SHARED = {
   AIRPAY_ENV: 'live',
   SUPABASE_URL: 'https://db.test',
@@ -63,17 +73,20 @@ const SHARED = {
 const KEY = {
   1: encryptionKey(M1.AIRPAY_USERNAME, M1.AIRPAY_PASSWORD),
   2: encryptionKey(M2.AIRPAY_USERNAME_2, M2.AIRPAY_PASSWORD_2),
+  3: encryptionKey(M3.AIRPAY_USERNAME_3, M3.AIRPAY_PASSWORD_3),
 };
 
-const MID = { 1: M1.AIRPAY_MID, 2: M2.AIRPAY_MID_2 };
+const MID = { 1: M1.AIRPAY_MID, 2: M2.AIRPAY_MID_2, 3: M3.AIRPAY_MID_3 };
 const KKCHAT_URL = 'https://kkchat.in/callback/cpm/arp_frontiva/collection';
 
 const AIRPAY_VARIABLES = [
   ...Object.keys(M1),
   ...Object.keys(M2),
+  ...Object.keys(M3),
   'AIRPAY_ENABLED_MERCHANTS',
   'AIRPAY_CALLBACK_PATH',
   'AIRPAY_CALLBACK_PATH_2',
+  'AIRPAY_CALLBACK_PATH_3',
   'AIRPAY_VERIFY_URL',
   'AIRPAY_VERIFY_EXTERNAL_CALLBACKS',
   'KKCHAT_CALLBACK_URL',
@@ -144,7 +157,7 @@ function world({ orders = [], transactions = {}, client = { status: 200 }, airpa
     text: async () => (typeof body === 'string' ? body : JSON.stringify(body)),
   });
 
-  const merchantForMid = (mid) => (mid === MID[1] ? 1 : mid === MID[2] ? 2 : null);
+  const merchantForMid = (mid) => Number(Object.keys(MID).find((merchant) => MID[merchant] === mid)) || null;
 
   globalThis.fetch = async (url, options = {}) => {
     const target = String(url);
@@ -435,15 +448,17 @@ describe('merchant configuration', () => {
     }
   });
 
-  test('exactly merchants 1 and 2 are accepted', () => {
+  test('exactly merchants 1, 2 and 3 are accepted', () => {
     assert.equal(parseMerchant(1), 1);
     assert.equal(parseMerchant('2'), 2);
+    assert.equal(parseMerchant(3), 3);
+    assert.equal(parseMerchant('3'), 3);
 
-    for (const value of [0, 3, -1, 1.5, '01', 'two', '', null, undefined, true, {}, [], '1 ', 'AIRPAY_MID']) {
+    for (const value of [0, 4, -1, 3.5, '03', '3 ', 1.5, '01', 'two', '', null, undefined, true, {}, [], '1 ', 'AIRPAY_MID']) {
       assert.equal(parseMerchant(value), null, `accepted ${JSON.stringify(value)}`);
     }
 
-    assert.throws(() => loadAirpayConfig(3), (error) => error.isConfigError);
+    assert.throws(() => loadAirpayConfig(4), (error) => error.isConfigError);
     assert.throws(() => loadAirpayConfig(undefined), (error) => error.isConfigError);
   });
 
@@ -728,7 +743,7 @@ describe('POST /api/payments/create — merchant selection', () => {
   });
 
   test('an invalid selection is rejected before anything is created', async () => {
-    for (const merchant of [3, 0, 'airpay', '1; drop', { id: 2 }, [2], true, 2.5]) {
+    for (const merchant of [4, 0, 'airpay', '1; drop', { id: 2 }, [2], true, 2.5, '3 ']) {
       const state = world();
       const response = await createPayment({ merchant });
 
@@ -875,7 +890,7 @@ describe('merchant-aware settlement', () => {
   });
 
   test('an order naming an unknown merchant is not settled at all', async () => {
-    for (const stored of [3, 0, 'x', '12']) {
+    for (const stored of [4, 0, 'x', '12']) {
       const h = settleWith(order({ airpay_merchant: stored }), confirmedPaid);
       const result = await h.run();
 
@@ -1549,7 +1564,7 @@ describe('the browser never holds a merchant credential', () => {
 
   test('client code names no Airpay variable, MID or endpoint', () => {
     for (const source of [ordersApi, checkout]) {
-      assert.ok(!/AIRPAY_|VITE_AIRPAY|airpay\.co\.in|_2\b.*(KEY|SECRET|PASSWORD)/.test(source));
+      assert.ok(!/AIRPAY_|VITE_AIRPAY|airpay\.co\.in|_[23]\b.*(KEY|SECRET|PASSWORD)/.test(source));
     }
   });
 
@@ -1582,5 +1597,629 @@ describe('the browser never holds a merchant credential', () => {
 
     assert.ok(!onlineBranch.includes('clearCart'));
     assert.match(onlineBranch, /setIsProcessing\(false\)/);
+  });
+});
+
+/**
+ * A third Airpay merchant, sharing merchant 2's callback path.
+ *
+ * Merchant 3 is configured only inside this block, so every test above keeps
+ * describing the two-merchant deployment it was written for. The same
+ * properties are asserted for merchant 3, plus the one that is new: two MIDs
+ * registering the same Frontiva URL are still told apart by MID, envelope key
+ * and the order row, never by the path.
+ */
+describe('a third merchant on the shared arp_frontiva callback path', () => {
+  beforeEach(() => {
+    Object.assign(process.env, M3);
+  });
+
+  const createWith = (merchant) => createPayment({ merchant });
+
+  /** Makes Airpay's OAuth endpoint refuse merchant 3 only, as a WAF 403 would. */
+  const refuseMerchant3OAuth = (state) => {
+    const stub = globalThis.fetch;
+
+    globalThis.fetch = async (url, options = {}) => {
+      if (String(url).includes('/oauth2/') && new URLSearchParams(options.body).get('merchant_id') === MID[3]) {
+        state?.oauth.push({ merchant: 3, failed: true });
+        return { ok: false, status: 403, headers: { get: () => 'text/html' }, text: async () => 'Forbidden' };
+      }
+
+      return stub(url, options);
+    };
+  };
+
+  describe('configuration', () => {
+    test('merchant 3 loads only the _3 variables', () => {
+      const config = loadAirpayConfig(3);
+
+      assert.equal(config.merchant, 3);
+      assert.equal(config.mid, M3.AIRPAY_MID_3);
+      assert.equal(config.clientId, M3.AIRPAY_CLIENT_ID_3);
+      assert.equal(config.secretKey, M3.AIRPAY_SECRET_KEY_3);
+      assert.equal(config.apiKey, M3.AIRPAY_API_KEY_3);
+      assert.equal(config.username, M3.AIRPAY_USERNAME_3);
+      assert.equal(config.password, M3.AIRPAY_PASSWORD_3);
+
+      for (const value of [...Object.values(M1), ...Object.values(M2)]) {
+        assert.ok(!Object.values(config).includes(value), 'merchant 3 picked up another merchant’s value');
+      }
+    });
+
+    test('a missing merchant 3 credential is an error, never a fallback, and touches no one else', () => {
+      for (const name of Object.keys(M3)) {
+        const saved = process.env[name];
+
+        delete process.env[name];
+
+        assert.throws(
+          () => loadAirpayConfig(3),
+          (error) => error.isConfigError && error.message.includes(name) && !error.message.includes(saved),
+          `${name} missing must fail`,
+        );
+        assert.equal(isMerchantConfigured(3), false);
+        assert.equal(loadAirpayConfig(1).mid, M1.AIRPAY_MID);
+        assert.equal(loadAirpayConfig(2).mid, M2.AIRPAY_MID_2);
+        assert.deepEqual(checkoutMerchants(), [1, 2]);
+
+        process.env[name] = saved;
+      }
+    });
+
+    test('checkout offers all three by default and with AIRPAY_ENABLED_MERCHANTS=1,2,3', () => {
+      assert.deepEqual(checkoutMerchants(), [1, 2, 3]);
+
+      process.env.AIRPAY_ENABLED_MERCHANTS = '1,2,3';
+      assert.deepEqual(checkoutMerchants(), [1, 2, 3]);
+    });
+
+    test('AIRPAY_ENABLED_MERCHANTS=1,2 stops new merchant 3 payments but keeps it verifiable', () => {
+      process.env.AIRPAY_ENABLED_MERCHANTS = '1,2';
+
+      assert.deepEqual(checkoutMerchants(), [1, 2]);
+      assert.deepEqual(
+        configuredMerchants().map((entry) => entry.merchant),
+        [1, 2, 3],
+      );
+    });
+
+    test('merchant 3 names the shared arp_frontiva path, and an override must be a served path', () => {
+      assert.equal(callbackPathFor(3), '/callback/cpm/arp_frontiva/collection');
+      // Merchants 1 and 2 are unchanged by merchant 3's arrival.
+      assert.equal(callbackPathFor(1), '/callback/cpm/arp/collection');
+      assert.equal(callbackPathFor(2), '/callback/cpm/arp_frontiva/collection');
+
+      process.env.AIRPAY_CALLBACK_PATH_3 = CALLBACK_PATH_FRONTIVA;
+      assert.equal(callbackPathFor(3), CALLBACK_PATH_FRONTIVA);
+
+      process.env.AIRPAY_CALLBACK_PATH_3 = 'https://kkchat.in/callback/cpm/arp_frontiva/collection';
+      assert.equal(callbackPathFor(3), CALLBACK_PATH_FRONTIVA);
+    });
+
+    test('the shared path is routed once, with no duplicate or conflicting rewrite', () => {
+      const vercel = JSON.parse(readFileSync(new URL('../vercel.json', import.meta.url), 'utf8'));
+      const matching = vercel.rewrites.filter((entry) => entry.source === CALLBACK_PATH_FRONTIVA);
+
+      assert.equal(matching.length, 1);
+      assert.equal(matching[0].destination, '/api/payments/callback');
+    });
+  });
+
+  describe('POST /api/payments/create', () => {
+    test('merchant 3 authenticates, encrypts and signs with its own credentials only', async () => {
+      const state = world();
+      const response = await createWith(3);
+      const body = response.json();
+      const config = loadAirpayConfig(3);
+
+      assert.equal(response.statusCode, 200);
+      assert.deepEqual(state.oauth.map((entry) => entry.merchant), [3]);
+      assert.equal(body.fields.merchant_id, MID[3]);
+      assert.match(body.action, /^https:\/\/payments\.airpay\.co\.in\/pay\/v4\/\?token=token-for-3$/);
+      assert.equal(body.fields.privatekey, privateKey(config.apiKey, config.username, config.password));
+
+      const sent = JSON.parse(decrypt(body.fields.encdata, KEY[3]));
+
+      assert.equal(sent.orderid, body.order_ref);
+      assert.equal(sent.amount, '1500.00');
+      assert.equal(sent.successUrl, 'https://frontiva.online/callback/cpm/arp_frontiva/collection');
+      assert.equal(sent.failureUrl, 'https://frontiva.online/callback/cpm/arp_frontiva/collection');
+
+      for (const other of [1, 2]) {
+        assert.throws(() => JSON.parse(decrypt(body.fields.encdata, KEY[other])), `key ${other} opened it`);
+      }
+    });
+
+    test('a merchant 3 order records airpay_merchant = 3 and the usual reference', async () => {
+      const state = world();
+      const { order_ref: ref } = (await createWith(3)).json();
+      const row = state.orders.find((entry) => entry.order_ref === ref);
+
+      assert.equal(row.airpay_merchant, 3);
+      assert.equal(merchantForOrder(row), 3);
+      assert.equal(row.total, 1500, 'priced by the server, unchanged');
+      assert.match(ref, /^FRV[A-Z0-9]{5,61}$/);
+    });
+
+    test('merchants 1 and 2 still work, and write what they always did, with merchant 3 present', async () => {
+      const state = world();
+
+      for (const merchant of [1, 2]) {
+        const response = await createWith(merchant);
+        const { fields, order_ref: ref } = response.json();
+        const row = state.orders.find((entry) => entry.order_ref === ref);
+
+        assert.equal(response.statusCode, 200);
+        assert.equal(fields.merchant_id, MID[merchant]);
+        assert.equal(JSON.parse(decrypt(fields.encdata, KEY[merchant])).amount, '1500.00');
+        assert.equal(row.airpay_merchant, merchant === 1 ? undefined : 2);
+      }
+
+      assert.deepEqual(state.oauth.map((entry) => entry.merchant), [1, 2]);
+      // An absent selection is still merchant 1.
+      assert.equal((await createPayment()).json().fields.merchant_id, MID[1]);
+    });
+
+    test('merchant 3 unconfigured is refused and never becomes merchant 1 or 2', async () => {
+      delete process.env.AIRPAY_PASSWORD_3;
+
+      const state = world();
+      const response = await createWith(3);
+
+      assert.equal(response.statusCode, 503);
+      assert.equal(response.json().code, 'merchant_unavailable');
+      assert.equal(state.oauth.length, 0);
+      assert.equal(state.orders.length, 0);
+
+      assert.equal((await createWith(1)).statusCode, 200);
+      assert.equal((await createWith(2)).statusCode, 200);
+    });
+
+    test('merchant 3 switched off at checkout is refused, while 1 and 2 carry on', async () => {
+      process.env.AIRPAY_ENABLED_MERCHANTS = '1,2';
+
+      const state = world();
+
+      assert.equal((await createWith(3)).statusCode, 503);
+      assert.equal(state.orders.length, 0);
+      assert.equal((await createWith(1)).statusCode, 200);
+      assert.equal((await createWith(2)).statusCode, 200);
+    });
+
+    test('a merchant 3 OAuth failure creates nothing and is not retried on another merchant', async () => {
+      const state = world();
+
+      refuseMerchant3OAuth(state);
+
+      const response = await createWith(3);
+
+      assert.equal(response.statusCode, 502);
+      assert.equal(response.json().code, 'airpay');
+      assert.equal(state.orders.length, 0);
+      assert.deepEqual(state.oauth.map((entry) => entry.merchant), [3]);
+
+      for (const secret of Object.values(M3)) {
+        assert.ok(!response.body.includes(secret));
+      }
+    });
+
+    test('before the merchant 3 migration, the refused insert fails safely and hands nothing to Airpay', async () => {
+      const state = world();
+      const stub = globalThis.fetch;
+
+      // What PostgREST answers while the check constraint still allows (1, 2).
+      globalThis.fetch = async (url, options = {}) => {
+        const isOrderInsert = String(url).includes('/rest/v1/orders') && options.method === 'POST';
+
+        if (isOrderInsert && JSON.parse(options.body).airpay_merchant === 3) {
+          return { ok: false, status: 400, headers: { get: () => 'application/json' }, text: async () => '{"code":"23514"}' };
+        }
+
+        return stub(url, options);
+      };
+
+      const response = await createWith(3);
+
+      assert.equal(response.statusCode, 502);
+      assert.equal(response.json().code, 'database');
+      assert.equal(response.json().action, undefined, 'no hand-off to Airpay');
+      assert.equal(state.orders.length, 0);
+      assert.equal((await createWith(2)).statusCode, 200, 'merchant 2 is unaffected');
+    });
+
+    test('options lists merchant 3 by number only', async () => {
+      const response = await call(optionsHandler, { method: 'GET', url: '/api/payments/options' });
+
+      assert.deepEqual(response.json(), { merchants: [1, 2, 3] });
+
+      for (const value of Object.values(M3)) {
+        assert.ok(!response.body.includes(value));
+      }
+    });
+  });
+
+  describe('callbacks', () => {
+    test('a plaintext merchant 3 IPN on the shared path settles its order and is relayed verbatim', async () => {
+      const row = order({ airpay_merchant: 3 });
+      const state = world({ orders: [row], transactions: { [`3:${row.order_ref}`]: PAID } });
+      const logs = captureLogs();
+      const body = ipn(3, row.order_ref);
+
+      const response = await postCallback(body, { path: CALLBACK_PATH_FRONTIVA });
+
+      assert.equal(response.statusCode, 200);
+      assert.equal(response.body, 'OK');
+      assert.equal(state.orders[0].payment_status, 'paid');
+      assert.equal(state.orders[0].airpay_transaction_id, 'AP-1');
+      assert.deepEqual(state.confirmations.map((entry) => entry.merchant), [3]);
+      assert.equal(state.confirmations[0].token, 'token-for-3');
+      assert.equal(state.forwards.length, 1);
+      assert.equal(state.forwards[0].url, KKCHAT_URL);
+      assert.equal(state.forwards[0].options.method, 'POST');
+      assert.equal(state.forwards[0].options.headers['Content-Type'], 'application/json');
+      assert.deepEqual(state.forwards[0].body, Object.fromEntries(new URLSearchParams(body)));
+
+      const parsed = logs.find((entry) => entry.event === 'airpay.callback.parsed');
+      const applied = logs.find((entry) => entry.event === 'payment.settle.applied');
+
+      assert.equal(parsed.merchant, 3);
+      assert.equal(parsed.merchant_basis, 'stated_mid');
+      assert.deepEqual([applied.merchant, applied.status], [3, 'paid']);
+      assert.equal(logs.find((entry) => entry.event === 'airpay.callback.forward.start').merchant, 3);
+    });
+
+    test('a merchant 3 envelope is opened with key 3 and relayed still encrypted', async () => {
+      for (const withMid of [true, false]) {
+        const row = order({ airpay_merchant: 3 });
+        const state = world({ orders: [row], transactions: { [`3:${row.order_ref}`]: PAID } });
+        const envelope = enveloped(3, row.order_ref, { withMid });
+
+        await postCallback(envelope);
+
+        assert.equal(state.orders[0].payment_status, 'paid', `withMid=${withMid}`);
+        assert.deepEqual(state.confirmations.map((entry) => entry.merchant), [3]);
+        assert.deepEqual(state.forwards[0].body, envelope, 'forwarded byte for byte, still encrypted');
+      }
+    });
+
+    test('with three keys and no MID stated, the key that decrypts decides', () => {
+      const merchants = [1, 2, 3].map((merchant) => ({ merchant, mid: MID[merchant], key: KEY[merchant] }));
+
+      for (const merchant of [1, 2, 3]) {
+        const result = resolveCallback(enveloped(merchant, 'FRVTESTORDER0001', { withMid: false }), merchants);
+
+        assert.equal(result.merchant, merchant);
+        assert.equal(result.basis, 'envelope');
+        assert.equal(result.payload.CUSTOMVAR, 'FRVTESTORDER0001');
+      }
+
+      // A stated merchant 2 MID does not let a merchant 3 envelope through:
+      // key 3 is never tried, so its fields are never read. (Whether key 2
+      // "opens" it is not asserted: about 1 in 256 wrong-key decryptions pass
+      // padding, which is why settlement never trusts the envelope alone.)
+      const crossed = resolveCallback(
+        { merchant_id: MID[2], response: enveloped(3, 'FRVTESTORDER0001').response },
+        merchants,
+      );
+
+      assert.notEqual(crossed.merchant, 3);
+      assert.equal(crossed.payload.CUSTOMVAR, undefined);
+    });
+
+    test('merchant 2 keeps settling on the shared path with merchant 3 configured', async () => {
+      const row = order({ airpay_merchant: 2 });
+      const state = world({ orders: [row], transactions: { [`2:${row.order_ref}`]: PAID } });
+
+      await postCallback(ipn(2, row.order_ref), { path: CALLBACK_PATH_FRONTIVA });
+
+      assert.equal(state.orders[0].payment_status, 'paid');
+      assert.deepEqual(state.confirmations.map((entry) => entry.merchant), [2]);
+    });
+
+    test('a callback from another merchant never settles a merchant 3 order, and vice versa', async () => {
+      const cases = [
+        { stored: 3, body: ipn(1, 'FRVTESTORDER0001') },
+        { stored: 3, body: ipn(2, 'FRVTESTORDER0001') },
+        { stored: 3, body: enveloped(2, 'FRVTESTORDER0001', { withMid: false }) },
+        { stored: 2, body: ipn(3, 'FRVTESTORDER0001') },
+        { stored: 2, body: enveloped(3, 'FRVTESTORDER0001', { withMid: false }) },
+        { stored: null, body: ipn(3, 'FRVTESTORDER0001') },
+      ];
+
+      for (const { stored, body } of cases) {
+        const row = order({ airpay_merchant: stored });
+        const transactions = Object.fromEntries([1, 2, 3].map((merchant) => [`${merchant}:${row.order_ref}`, PAID]));
+        const state = world({ orders: [row], transactions });
+        const logs = captureLogs();
+
+        const response = await postCallback(body);
+
+        assert.equal(response.statusCode, 200);
+        assert.equal(state.orders[0].payment_status, 'initiated', `stored ${stored}`);
+        assert.equal(state.confirmations.length, 0);
+        assert.ok(logs.some((entry) => entry.event === 'payment.callback.mid_mismatch'));
+        assert.equal(state.forwards.length, 1, 'still relayed');
+      }
+    });
+
+    test('merchant 1 or 2 credentials cannot settle a merchant 3 order', async () => {
+      const row = order({ airpay_merchant: 3 });
+      // Paid on merchants 1 and 2 under the same reference — but not on 3.
+      const state = world({
+        orders: [row],
+        transactions: { [`1:${row.order_ref}`]: PAID, [`2:${row.order_ref}`]: PAID },
+      });
+
+      await postCallback(ipn(3, row.order_ref));
+
+      assert.notEqual(state.orders[0].payment_status, 'paid');
+      assert.equal(state.orders[0].paid_at, undefined);
+      assert.deepEqual(state.confirmations.map((entry) => entry.merchant), [3]);
+      assert.ok(state.oauth.every((entry) => entry.merchant === 3));
+    });
+
+    test('settleOrder asks merchant 3, and only merchant 3, for a merchant 3 order', async () => {
+      const asked = [];
+      const row = order({ airpay_merchant: 3 });
+
+      await settleOrder(row.order_ref, {
+        findOrder: async () => ({ ...row }),
+        confirm: async (ref, merchant) => {
+          asked.push(merchant);
+          return { verified: true, status: '200', amountInCents: 150000, transactionId: 'AP-1' };
+        },
+        applyUpdate: async (table, query, patch) => [{ ...row, ...patch }],
+      });
+
+      assert.deepEqual(asked, [3]);
+    });
+
+    test('a forged success cannot pay a merchant 3 order', async () => {
+      for (const transactions of [{}, { '3:FRVTESTORDER0001': FAILED }]) {
+        const row = order({ airpay_merchant: 3 });
+        const state = world({ orders: [row], transactions });
+
+        await postCallback(ipn(3, row.order_ref, { TRANSACTIONSTATUS: '200', MESSAGE: 'Success' }));
+
+        assert.notEqual(state.orders[0].payment_status, 'paid');
+        assert.equal(state.orders[0].paid_at, undefined);
+      }
+    });
+
+    test('failed, pending and mismatched-amount merchant 3 payments are applied as Airpay says', async () => {
+      const expectations = [
+        [FAILED, 'failed'],
+        [PENDING, 'processing'],
+        [{ ...PAID, amount: '1.00' }, 'requires_review'],
+      ];
+
+      for (const [transaction, expected] of expectations) {
+        const row = order({ airpay_merchant: 3 });
+        const state = world({ orders: [row], transactions: { [`3:${row.order_ref}`]: transaction } });
+
+        await postCallback(ipn(3, row.order_ref, { TRANSACTIONSTATUS: String(transaction.transaction_status) }));
+
+        assert.equal(state.orders[0].payment_status, expected);
+        assert.equal(state.orders[0].paid_at, undefined);
+      }
+    });
+
+    test('a duplicate merchant 3 IPN and browser return settle once and are each relayed', async () => {
+      const row = order({ airpay_merchant: 3 });
+      const state = world({ orders: [row], transactions: { [`3:${row.order_ref}`]: PAID } });
+      const body = ipn(3, row.order_ref);
+
+      await postCallback(body);
+      await postCallback(body);
+      const browser = await postCallback(body, { headers: { 'sec-fetch-mode': 'navigate' } });
+
+      assert.equal(state.orderWrites.length, 1, 'exactly one settlement write');
+      assert.equal(state.confirmations.length, 1);
+      assert.equal(state.events.length, 1);
+      assert.equal(browser.statusCode, 303);
+      assert.equal(state.forwards.length, 3);
+    });
+
+    test('merchant 3 credentials missing blocks its order instead of using another merchant', async () => {
+      const row = order({ airpay_merchant: 3 });
+      const state = world({ orders: [row], transactions: { [`3:${row.order_ref}`]: PAID } });
+
+      delete process.env.AIRPAY_SECRET_KEY_3;
+
+      const response = await postCallback(ipn(3, row.order_ref));
+
+      assert.equal(response.statusCode, 200);
+      assert.equal(state.orders[0].payment_status, 'initiated');
+      assert.equal(state.oauth.length, 0);
+      assert.equal(state.forwards.length, 1, 'still relayed');
+    });
+
+    test('with merchant 3 switched off at checkout, its in-flight orders still settle', async () => {
+      process.env.AIRPAY_ENABLED_MERCHANTS = '1,2';
+
+      const row = order({ airpay_merchant: 3 });
+      const state = world({ orders: [row], transactions: { [`3:${row.order_ref}`]: PAID } });
+
+      await postCallback(enveloped(3, row.order_ref));
+
+      assert.equal(state.orders[0].payment_status, 'paid');
+    });
+
+    test('external, unknown and malformed merchant 3 deliveries are relayed and settle nothing', async () => {
+      const bodies = [
+        ipn(3, 'KKORDER-2026-0042'),
+        ipn(3, 'FRVNOTINOURDB0001'),
+        enveloped(3, 'KKORDER-2026-0043'),
+        'MERCID=333333&%%%=&&',
+        '{not json',
+      ];
+
+      for (const body of bodies) {
+        const state = world();
+        const logs = captureLogs();
+
+        const response = await postCallback(body, {
+          headers: typeof body === 'string' && body.startsWith('{') ? { 'content-type': 'application/json' } : {},
+        });
+
+        assert.equal(response.statusCode, 200, String(body));
+        assert.equal(state.orders.length, 0);
+        assert.ok(!state.orderWrites.some((write) => write.method === 'PATCH'));
+        assert.equal(state.forwards.length, 1, 'relayed');
+        assert.equal(state.forwards[0].url, KKCHAT_URL);
+
+        if (typeof body === 'object') {
+          assert.deepEqual(state.forwards[0].body, body, 'envelope relayed still encrypted');
+          assert.equal(logs.find((entry) => entry.event === 'payment.callback.external_order').merchant, 3);
+        }
+      }
+    });
+
+    // The 3xx policy is merchant-agnostic and covered by the redirect tests in
+    // 'forwarding to the client endpoint' above.
+    test('KKChat non-2xx and timeouts are recorded and never change settlement', async () => {
+      for (const client of [{ status: 500 }, { status: 404 }, { hang: true }]) {
+        const row = order({ airpay_merchant: 3 });
+        const state = world({ orders: [row], transactions: { [`3:${row.order_ref}`]: PAID }, client });
+        const logs = captureLogs();
+
+        const response = await postCallback(ipn(3, row.order_ref));
+        const failure = logs.find((entry) => entry.event === 'airpay.callback.forward.failure');
+
+        assert.equal(response.statusCode, 200);
+        assert.equal(state.orders[0].payment_status, 'paid');
+        assert.equal(state.forwards.length, 1, 'one attempt, no retry');
+        assert.equal(failure.merchant, 3);
+        assert.equal(failure.status, client.hang ? null : client.status);
+        assert.equal(failure.error, client.hang ? 'timeout' : 'non-2xx');
+      }
+    });
+
+    test('a merchant 3 delivery carrying the loop guard is not relayed again', async () => {
+      const state = world();
+      const logs = captureLogs();
+
+      await postCallback(ipn(3, 'KKORDER-2026-0044'), { headers: { [LOOP_GUARD_HEADER]: '1' } });
+
+      assert.equal(state.forwards.length, 0);
+      assert.ok(logs.some((entry) => entry.event === 'airpay.callback.forward.skipped'));
+    });
+
+    test('no merchant 3 secret appears in any log line', async () => {
+      const row = order({ airpay_merchant: 3 });
+      world({ orders: [row], transactions: { [`3:${row.order_ref}`]: PAID } });
+
+      const lines = [];
+      console.log = (line) => lines.push(String(line));
+
+      await postCallback(enveloped(3, row.order_ref));
+
+      const secrets = [M3.AIRPAY_SECRET_KEY_3, M3.AIRPAY_API_KEY_3, M3.AIRPAY_PASSWORD_3, M3.AIRPAY_CLIENT_ID_3, KEY[3]];
+
+      assert.ok(lines.length > 0);
+
+      for (const line of lines) {
+        for (const secret of secrets) {
+          assert.ok(!line.includes(secret), 'a secret was logged');
+        }
+      }
+    });
+  });
+
+  describe('status and health', () => {
+    test('the success page checks a merchant 3 order with merchant 3 only', async () => {
+      const row = order({ airpay_merchant: 3 });
+      const state = world({ orders: [row], transactions: { [`3:${row.order_ref}`]: PAID } });
+
+      const response = await call(statusHandler, { method: 'GET', url: `/api/payments/status?ref=${row.order_ref}` });
+
+      assert.equal(response.json().order.payment_status, 'paid');
+      assert.ok(state.oauth.length > 0 && state.oauth.every((entry) => entry.merchant === 3));
+    });
+
+    test('health reports merchant 3 and probes its OAuth separately', async () => {
+      process.env.CRON_SECRET = 'cron-secret-for-tests';
+      world();
+
+      const open = (await call(healthHandler, { method: 'GET', url: '/api/health' })).json();
+
+      assert.deepEqual(open.merchants['3'], {
+        configured: true,
+        offered_at_checkout: true,
+        callback_url: 'https://frontiva.online/callback/cpm/arp_frontiva/collection',
+      });
+      assert.equal(open.oauth_merchant_3, undefined, 'no live probe without the bearer token');
+
+      const probed = await call(healthHandler, {
+        method: 'GET',
+        url: '/api/health',
+        headers: { authorization: 'Bearer cron-secret-for-tests' },
+      });
+
+      assert.equal(probed.json().oauth.ok, true);
+      assert.equal(probed.json().oauth_merchant_2.ok, true);
+      assert.equal(probed.json().oauth_merchant_3.ok, true);
+
+      for (const value of [...Object.values(M1), ...Object.values(M2), ...Object.values(M3)]) {
+        assert.ok(!probed.body.includes(value), 'health exposed a credential');
+      }
+    });
+
+    test('a merchant 3 OAuth failure is reported on its own and does not fail health', async () => {
+      process.env.CRON_SECRET = 'cron-secret-for-tests';
+      world();
+      refuseMerchant3OAuth();
+
+      const response = await call(healthHandler, {
+        method: 'GET',
+        url: '/api/health',
+        headers: { authorization: 'Bearer cron-secret-for-tests' },
+      });
+
+      assert.equal(response.statusCode, 200);
+      assert.equal(response.json().ok, true);
+      assert.equal(response.json().oauth.ok, true);
+      assert.equal(response.json().oauth_merchant_2.ok, true);
+      assert.equal(response.json().oauth_merchant_3.ok, false);
+    });
+
+    test('health shows merchant 3 not offered when switched off or unconfigured', async () => {
+      process.env.AIRPAY_ENABLED_MERCHANTS = '1,2';
+      world();
+
+      let body = (await call(healthHandler, { method: 'GET', url: '/api/health' })).json();
+
+      assert.deepEqual([body.merchants['3'].configured, body.merchants['3'].offered_at_checkout], [true, false]);
+
+      delete process.env.AIRPAY_MID_3;
+      body = (await call(healthHandler, { method: 'GET', url: '/api/health' })).json();
+
+      assert.equal(body.merchants['3'].configured, false);
+    });
+  });
+
+  describe('checkout and migration', () => {
+    const read = (relative) => readFileSync(new URL(relative, import.meta.url), 'utf8');
+
+    test('the checkout can offer Pay with Airpay 3, by number, from the server list', () => {
+      const ordersApi = read('../apps/web/src/api/OrdersApi.js');
+      const checkout = read('../apps/web/src/pages/CheckoutPage.jsx');
+
+      assert.match(ordersApi, /export const PAYMENT_GATEWAYS = \[1, 2, 3\];/);
+      assert.match(checkout, /\{ id: 3, label: 'Pay with Airpay 3' \}/);
+      // Still filtered by what /api/payments/options returns.
+      assert.match(ordersApi, /PAYMENT_GATEWAYS\.filter\(\(gateway\) => payload\?\.merchants\?\.includes\(gateway\)\)/);
+      assert.ok(!/_3\b/.test(ordersApi + checkout), 'no merchant 3 variable in browser code');
+    });
+
+    test('the merchant 3 migration only widens the constraint', () => {
+      const sql = read('../migrations-airpay-merchant-3.sql');
+      const statements = sql.replace(/--.*$/gm, '').toLowerCase();
+
+      assert.match(statements, /check \(airpay_merchant is null or airpay_merchant in \(1, 2, 3\)\)/);
+      assert.ok(!/\b(drop table|drop column|delete from|truncate|update public)\b/.test(statements));
+      assert.match(read('../supabase-schema.sql'), /airpay_merchant in \(1, 2, 3\)/);
+    });
   });
 });

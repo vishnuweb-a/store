@@ -33,6 +33,7 @@ const PAYMENT_METHODS = [
 const PAYMENT_GATEWAYS = [
   { id: 1, label: 'Pay with Airpay 1' },
   { id: 2, label: 'Pay with Airpay 2' },
+  { id: 3, label: 'Pay with Airpay 3' },
 ];
 
 const CheckoutPage = () => {
@@ -40,7 +41,7 @@ const CheckoutPage = () => {
   const [isProcessing, setIsProcessing] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState('cod');
   // Gateway 1 is the only one assumed until the server says otherwise, so the
-  // page behaves as it always has if the second gateway is not available.
+  // page behaves as it always has if the other gateways are not available.
   const [availableGateways, setAvailableGateways] = useState([1]);
   const [gateway, setGateway] = useState(1);
   const [rejectedItems, setRejectedItems] = useState([]);

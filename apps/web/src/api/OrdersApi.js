@@ -86,7 +86,7 @@ export async function createCodOrder({ customer, cartItems }) {
 }
 
 /** The online payment gateways a customer can be offered, by number. */
-export const PAYMENT_GATEWAYS = [1, 2];
+export const PAYMENT_GATEWAYS = [1, 2, 3];
 
 /**
  * Asks the server which online payment gateways are available right now.
@@ -121,7 +121,7 @@ export async function getPaymentGateways() {
  * @param {Object} params
  * @param {{fullName: string, phone: string, address: string, landmark: string}} params.customer
  * @param {Array} params.cartItems - Items from the cart context
- * @param {number} [params.merchant] - Chosen gateway, 1 or 2
+ * @param {number} [params.merchant] - Chosen gateway, 1, 2 or 3
  * @returns {Promise<{order_ref: string, action: string, fields: Record<string, string>}>}
  */
 export async function createOnlinePayment({ customer, cartItems, merchant = 1 }) {

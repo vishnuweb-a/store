@@ -79,7 +79,7 @@ function sameHostRedirect(from, response) {
  * @param {Record<string, unknown>} params.payload - The received callback fields
  * @param {string} [params.raw] - Original body, used only to report byte length
  * @param {string|null} [params.orderRef] - For logging only
- * @param {1|2|null} [params.merchant] - Resolved Airpay merchant; for logging only
+ * @param {1|2|3|null} [params.merchant] - Resolved Airpay merchant; for logging only
  * @param {Record<string, unknown>} [params.incomingHeaders] - To detect a loop
  * @returns {Promise<{forwarded: boolean, status: number|null, reason?: string}>}
  */

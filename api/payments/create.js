@@ -2,7 +2,7 @@
  * POST /api/payments/create
  *
  * Starts an online payment. The browser sends only what is being bought and
- * which of the two Airpay accounts to pay through; this endpoint prices the
+ * which of the Airpay accounts to pay through; this endpoint prices the
  * order from Supabase, creates a pending order, authenticates with the chosen
  * Airpay merchant, and returns the encrypted form the browser posts to
  * Airpay's hosted payment page.
@@ -19,13 +19,13 @@ import { normalizeCustomer, normalizeItems, priceOrder } from '../_lib/pricing.j
 /**
  * Reads the merchant selection out of the request.
  *
- * The browser may only name one of the two accounts by number. It is never
+ * The browser may only name one of the accounts by number. It is never
  * allowed to supply a MID, a credential or an endpoint, and none is read. An
  * absent selection is merchant 1, so a checkout page cached from before the
  * second account existed keeps working exactly as it did.
  *
  * @param {Record<string, unknown>} body
- * @returns {1|2}
+ * @returns {1|2|3}
  */
 function selectMerchant(body) {
   const raw = body.merchant;
@@ -65,7 +65,7 @@ export default async function handler(req, res) {
 
     if (!checkoutMerchants().includes(merchant)) {
       // Switched off, or not configured. The customer is told to pick another
-      // option; the payment is never quietly moved to the other account.
+      // option; the payment is never quietly moved to another account.
       logEvent('payment.create.merchant_unavailable', { merchant });
       json(res, 503, {
         error: 'That payment option is temporarily unavailable. Please choose another payment option.',

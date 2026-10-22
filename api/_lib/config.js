@@ -23,9 +23,11 @@ export const AIRPAY_PAY_URL = 'https://payments.airpay.co.in/pay/v4/';
 export const CALLBACK_PATH = '/callback/cpm/arp/collection';
 
 /**
- * The callback path required for the dual-merchant setup. Served by the same
+ * The callback path required for the multi-merchant setup. Served by the same
  * handler as CALLBACK_PATH; the older path stays live as an alias because it is
- * what merchant 1's Airpay dashboard has registered today.
+ * what merchant 1's Airpay dashboard has registered today. Merchants 2 and 3
+ * both register this one path: which merchant a delivery belongs to is never
+ * read from the path, only from the envelope key, the stated MID and the order.
  */
 export const CALLBACK_PATH_FRONTIVA = '/callback/cpm/arp_frontiva/collection';
 
@@ -33,20 +35,20 @@ export const CALLBACK_PATH_FRONTIVA = '/callback/cpm/arp_frontiva/collection';
 export const CALLBACK_PATHS = [CALLBACK_PATH, CALLBACK_PATH_FRONTIVA];
 
 /**
- * The two Airpay merchant accounts. Merchant 1 is the original account and
- * keeps the original, unsuffixed variable names; merchant 2 reads the same six
- * roles from the `_2` names. There is no "active merchant": every operation is
- * handed the merchant it is for.
+ * The Airpay merchant accounts. Merchant 1 is the original account and keeps
+ * the original, unsuffixed variable names; merchants 2 and 3 read the same six
+ * roles from the `_2` and `_3` names. There is no "active merchant": every
+ * operation is handed the merchant it is for.
  */
-export const MERCHANTS = [1, 2];
+export const MERCHANTS = [1, 2, 3];
 
-const MERCHANT_ENV_SUFFIX = { 1: '', 2: '_2' };
+const MERCHANT_ENV_SUFFIX = { 1: '', 2: '_2', 3: '_3' };
 
 /**
  * The return URL each merchant sends by default. Merchant 1 keeps the path its
  * dashboard already registers, so deploying this code changes nothing for it.
  */
-const DEFAULT_CALLBACK_PATH = { 1: CALLBACK_PATH, 2: CALLBACK_PATH_FRONTIVA };
+const DEFAULT_CALLBACK_PATH = { 1: CALLBACK_PATH, 2: CALLBACK_PATH_FRONTIVA, 3: CALLBACK_PATH_FRONTIVA };
 
 /**
  * NOTE ON kkchat.in
@@ -87,20 +89,19 @@ function required(name) {
 }
 
 /**
- * Normalises a merchant selection. Exactly 1 and 2 (or their string forms, as a
- * JSON body or a database column may deliver them) are accepted; everything
- * else — including null — is null, so callers decide what absence means.
+ * Normalises a merchant selection. Exactly 1, 2 and 3 (or their string forms,
+ * as a JSON body or a database column may deliver them) are accepted;
+ * everything else — including null — is null, so callers decide what absence
+ * means.
  *
  * @param {unknown} value
- * @returns {1|2|null}
+ * @returns {1|2|3|null}
  */
 export function parseMerchant(value) {
-  if (value === 1 || value === '1') {
-    return 1;
-  }
-
-  if (value === 2 || value === '2') {
-    return 2;
+  for (const merchant of MERCHANTS) {
+    if (value === merchant || value === String(merchant)) {
+      return merchant;
+    }
   }
 
   return null;
@@ -111,11 +112,12 @@ export function parseMerchant(value) {
  * missing, so callers can answer "payments are unavailable" without leaking
  * which secret.
  *
- * Only the named merchant's variables are read. A missing merchant-2 value is
- * an error for merchant 2 — it never falls back to merchant 1's.
+ * Only the named merchant's variables are read. A missing merchant-2 or
+ * merchant-3 value is an error for that merchant — it never falls back to
+ * another merchant's.
  *
- * @param {1|2} merchant
- * @returns {{merchant: 1|2, mid: string, clientId: string, secretKey: string, apiKey: string, username: string, password: string, env: string}}
+ * @param {1|2|3} merchant
+ * @returns {{merchant: 1|2|3, mid: string, clientId: string, secretKey: string, apiKey: string, username: string, password: string, env: string}}
  */
 export function loadAirpayConfig(merchant) {
   const id = parseMerchant(merchant);
@@ -141,7 +143,7 @@ export function loadAirpayConfig(merchant) {
 /**
  * Whether every credential for a merchant is present.
  *
- * @param {1|2} merchant
+ * @param {1|2|3} merchant
  * @returns {boolean}
  */
 export function isMerchantConfigured(merchant) {
@@ -176,11 +178,11 @@ export function configuredMerchants() {
 
 /**
  * Merchants a NEW payment may be started on: AIRPAY_ENABLED_MERCHANTS (default
- * both) narrowed to those actually configured. This is the checkout switch —
- * setting it to `1` restores merchant-1-only checkout without touching
- * verification of orders already placed on merchant 2.
+ * all) narrowed to those actually configured. This is the checkout switch —
+ * setting it to `1,2` stops new merchant 3 payments without touching
+ * verification of orders already placed on merchant 3.
  *
- * @returns {(1|2)[]}
+ * @returns {(1|2|3)[]}
  */
 export function checkoutMerchants() {
   const listed = String(process.env.AIRPAY_ENABLED_MERCHANTS || '')
@@ -188,7 +190,7 @@ export function checkoutMerchants() {
     .map((entry) => parseMerchant(entry.trim()))
     .filter(Boolean);
 
-  // An unset or unreadable value means "both", never "none": a typo here must
+  // An unset or unreadable value means "all", never "none": a typo here must
   // not be able to switch off the merchant that is live today.
   const enabled = listed.length > 0 ? listed : MERCHANTS;
 
@@ -198,10 +200,10 @@ export function checkoutMerchants() {
 /**
  * The public callback path a merchant's payment request names as its return
  * URL. It must equal what that MID's Airpay dashboard registers, so it is
- * configurable per merchant — but only between the two paths this deployment
+ * configurable per merchant — but only between the paths this deployment
  * actually serves.
  *
- * @param {1|2} merchant
+ * @param {1|2|3} merchant
  * @returns {string}
  */
 export function callbackPathFor(merchant) {

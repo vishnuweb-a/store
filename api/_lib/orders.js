@@ -37,23 +37,25 @@ export const RECONCILABLE_STATUSES = ['initiated', 'processing', 'requires_revie
  * @param {{fullName: string, phone: string, address: string, landmark: string|null}} params.customer
  * @param {Object[]} params.items - Server-priced lines
  * @param {number} params.totalInCents - Server-derived total
- * @param {1|2} [params.merchant] - Airpay merchant the payment is started on
+ * @param {1|2|3} [params.merchant] - Airpay merchant the payment is started on
  * @returns {Promise<{id: number, order_ref: string, created_at: string}>}
  */
 export async function createPendingOrder({ customer, items, totalInCents, merchant = 1 }) {
   const orderRef = newOrderRef();
   const now = new Date().toISOString();
 
-  if (!parseMerchant(merchant)) {
+  const id = parseMerchant(merchant);
+
+  if (!id) {
     throw new Error('Order could not be created');
   }
 
   const [row] = await insert('orders', {
-    // Written only for merchant 2. A null airpay_merchant means merchant 1,
-    // which is what every order placed before the second account existed
+    // Written for every merchant but 1. A null airpay_merchant means merchant
+    // 1, which is what every order placed before the second account existed
     // already carries — and it keeps merchant 1's insert identical to the one
     // in production, so it does not depend on the new column existing.
-    ...(parseMerchant(merchant) === 2 ? { airpay_merchant: 2 } : {}),
+    ...(id !== 1 ? { airpay_merchant: id } : {}),
     customer_name: customer.fullName,
     phone: customer.phone,
     address: customer.address,
@@ -97,11 +99,11 @@ export async function findOrderByRef(orderRef) {
  * airpay_merchant column. Null (every order that predates the second account,
  * and every merchant-1 order since) is merchant 1.
  *
- * A value that is present but is neither 1 nor 2 is not guessed at: null is
- * returned and the caller refuses to settle.
+ * A value that is present but is not a known merchant is not guessed at: null
+ * is returned and the caller refuses to settle.
  *
  * @param {Object} order
- * @returns {1|2|null}
+ * @returns {1|2|3|null}
  */
 export function merchantForOrder(order) {
   const stored = order?.airpay_merchant;

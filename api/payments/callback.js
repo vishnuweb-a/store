@@ -1,13 +1,14 @@
 /**
- * Airpay Response + IPN endpoint for Frontiva, for both merchant accounts.
+ * Airpay Response + IPN endpoint for Frontiva, for every merchant account.
  *
  * PUBLIC URLS (one handler, see CALLBACK_PATHS in config.js):
- *   https://frontiva.online/callback/cpm/arp_frontiva/collection
- *   https://frontiva.online/callback/cpm/arp/collection   (original, kept live)
+ *   https://frontiva.online/callback/cpm/arp_frontiva/collection   (merchants 2 and 3)
+ *   https://frontiva.online/callback/cpm/arp/collection            (merchant 1, original)
  *
  * Each Airpay MID registers one of those paths as BOTH its Response
  * (Success/Failed) URL and its IPN URL, so this one handler serves both kinds
- * of traffic for both merchants. It is reached through the vercel.json rewrites
+ * of traffic for every merchant. Several MIDs may share one path, so the path
+ * is never used to decide which merchant a delivery belongs to. It is reached through the vercel.json rewrites
  * of those paths onto this function; the /api prefix is a Vercel filesystem
  * requirement, not a change of the public contract.
  *
@@ -65,7 +66,7 @@ const EXTERNAL_VERIFY_TIMEOUT_MS = 12_000;
  * no keys an envelope is simply left encoded, which costs us the order
  * reference but nothing else.
  *
- * @returns {{merchant: 1|2, mid: string, key: string}[]}
+ * @returns {{merchant: 1|2|3, mid: string, key: string}[]}
  */
 function merchantKeysOrEmpty() {
   try {
@@ -222,7 +223,7 @@ export default async function handler(req, res) {
     let delivery = null;
 
     try {
-      // Which of the two merchants this delivery belongs to, decided by the
+      // Which merchant this delivery belongs to, decided by the
       // key that opens its envelope or, failing that, by a stated MID that
       // matches server configuration.
       delivery = resolveCallback(received, merchantKeysOrEmpty());
@@ -250,7 +251,7 @@ export default async function handler(req, res) {
       logEvent('airpay.callback.parse_failed', { source: isBrowser ? 'browser' : 'ipn' });
     }
 
-    // Relay every received callback, from either merchant. Reached on every
+    // Relay every received callback, from any merchant. Reached on every
     // path above — a parse failure cannot skip it, a null order_ref does not
     // gate it, and no database lookup precedes it, so an order Frontiva has
     // never heard of is relayed exactly like one of its own.

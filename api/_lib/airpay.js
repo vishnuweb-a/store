@@ -197,7 +197,7 @@ export function hasInnerFailure(payload) {
  * usable access_token AND does not carry an inner failure flag. A transport
  * success is not an authentication success.
  *
- * @param {1|2} merchant - Whose credentials to authenticate with
+ * @param {1|2|3} merchant - Whose credentials to authenticate with
  * @returns {Promise<{accessToken: string, expiresIn: number, expiresAt: number}>}
  */
 export async function getAccessToken(merchant) {
@@ -281,7 +281,7 @@ export async function getAccessToken(merchant) {
  * @param {{fullName: string, phone: string, address: string}} params.customer
  * @param {string} params.returnUrl
  * @param {string} params.accessToken - Issued to the same merchant
- * @param {1|2} params.merchant - Whose credentials sign and encrypt the fields
+ * @param {1|2|3} params.merchant - Whose credentials sign and encrypt the fields
  * @returns {{action: string, fields: Record<string, string>}}
  */
 export function buildPaymentRequest({ orderRef, amountInCents, customer, returnUrl, accessToken, merchant }) {
@@ -358,8 +358,8 @@ function findTransactionStatus(payload) {
  * never paid.
  *
  * @param {string} orderRef
- * @param {1|2} merchant - The merchant the order was placed on
- * @returns {Promise<{verified: boolean, status: string|null, amountInCents: number|null, transactionId: string|null, merchant: 1|2|null, reason?: string}>}
+ * @param {1|2|3} merchant - The merchant the order was placed on
+ * @returns {Promise<{verified: boolean, status: string|null, amountInCents: number|null, transactionId: string|null, merchant: 1|2|3|null, reason?: string}>}
  */
 export async function confirmOrder(orderRef, merchant) {
   const unverified = (reason) => ({
@@ -470,7 +470,7 @@ export async function confirmOrder(orderRef, merchant) {
  * recognises the order.
  *
  * @param {string} orderId - Airpay orderid as received
- * @param {(1|2)[]} merchants - Candidates, from server configuration only
+ * @param {(1|2|3)[]} merchants - Candidates, from server configuration only
  * @param {{confirm?: Function}} [deps] - Injectable I/O, for tests
  * @returns {Promise<Awaited<ReturnType<typeof confirmOrder>>>}
  */
