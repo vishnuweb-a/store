@@ -111,6 +111,30 @@ alter table public.orders
   add constraint orders_airpay_merchant_check
   check (airpay_merchant is null or airpay_merchant in (1, 2, 3));
 
+-- SabPaisa PG 3.0. payment_gateway NULL means Airpay; only SabPaisa orders
+-- write 'sabpaisa'. Standalone copy, with the full reasoning:
+-- migrations-sabpaisa.sql.
+alter table public.orders add column if not exists payment_gateway text;
+
+alter table public.orders drop constraint if exists orders_payment_gateway_check;
+alter table public.orders
+  add constraint orders_payment_gateway_check
+  check (payment_gateway is null or payment_gateway in ('airpay', 'sabpaisa'));
+
+alter table public.orders add column if not exists gateway_payment_id text;
+alter table public.orders add column if not exists gateway_txn_id text;
+alter table public.orders add column if not exists last_checked_at timestamptz;
+alter table public.orders add column if not exists enquiry_count integer;
+
+alter table public.orders drop constraint if exists orders_enquiry_count_check;
+alter table public.orders
+  add constraint orders_enquiry_count_check
+  check (enquiry_count is null or enquiry_count >= 0);
+
+create index if not exists orders_sabpaisa_open_idx
+  on public.orders (last_checked_at nulls first)
+  where payment_gateway = 'sabpaisa';
+
 -- Unique rather than a primary key so Cash on Delivery rows, which have no
 -- order_ref, are unaffected: Postgres allows unlimited nulls in a unique index.
 create unique index if not exists orders_order_ref_key on public.orders (order_ref);

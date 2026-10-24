@@ -16,9 +16,16 @@ import { getAccessToken } from './_lib/airpay.js';
 import {
   CALLBACK_PATHS,
   MERCHANTS,
+  SABPAISA_BASE_URL,
   callbackPathFor,
   checkoutMerchants,
   isMerchantConfigured,
+  isSabpaisaConfigured,
+  sabpaisaAvailable,
+  sabpaisaBaseUrlOverridden,
+  sabpaisaEnabled,
+  sabpaisaEnvNames,
+  sabpaisaReturnOrigin,
   siteOrigin,
 } from './_lib/config.js';
 import { allowMethods, isCronAuthorized, json, logEvent } from './_lib/http.js';
@@ -81,8 +88,23 @@ export default async function handler(req, res) {
     vercel_env: (process.env.VERCEL_ENV || '').trim() || null,
   };
 
+  // SabPaisa readiness, reported alongside and never part of `ok`: SabPaisa
+  // being off or unconfigured is not an outage. Booleans and variable NAMES
+  // only — no value, and no live call to SabPaisa (an enquiry would spend a
+  // payment's poll budget).
+  const sabpaisa = {
+    configured: isSabpaisaConfigured(),
+    enabled: sabpaisaEnabled(),
+    offered_at_checkout: sabpaisaAvailable(),
+    production: true,
+    api_base_url: SABPAISA_BASE_URL,
+    base_url_override_ignored: sabpaisaBaseUrlOverridden(),
+    return_url: `${sabpaisaReturnOrigin()}/success?ref=<order_ref>`,
+    env_names: sabpaisaEnvNames(),
+  };
+
   if (!isCronAuthorized(req)) {
-    json(res, ready ? 200 : 503, { ok: ready, configured, merchants, environment });
+    json(res, ready ? 200 : 503, { ok: ready, configured, merchants, environment, sabpaisa });
     return;
   }
 
@@ -115,6 +137,7 @@ export default async function handler(req, res) {
       environment,
       oauth: { ok: true, expires_in: expiresIn },
       ...oauthByMerchant,
+      sabpaisa,
     });
   } catch (error) {
     logEvent('payment.health.oauth_failed', {
@@ -130,6 +153,7 @@ export default async function handler(req, res) {
       // A reason, never a credential.
       oauth: { ok: false, reason: error?.detail || 'authentication failed' },
       ...oauthByMerchant,
+      sabpaisa,
     });
   }
 }

@@ -88,22 +88,28 @@ export async function createCodOrder({ customer, cartItems }) {
 /** The online payment gateways a customer can be offered, by number. */
 export const PAYMENT_GATEWAYS = [1, 2, 3];
 
+/** The id the SabPaisa option is known by in the gateway list. */
+export const SABPAISA_GATEWAY = 'sabpaisa';
+
 /**
  * Asks the server which online payment gateways are available right now.
  *
- * The answer is a list of gateway numbers and nothing else. If it cannot be
- * read, gateway 1 alone is assumed — the single online option the checkout has
- * always had — so a failure here never takes online payment away.
+ * The answer is the Airpay gateway numbers, followed by 'sabpaisa' when the
+ * server offers SabPaisa. If it cannot be read, gateway 1 alone is assumed —
+ * the single online option the checkout has always had — so a failure here
+ * never takes online payment away. SabPaisa is only ever added on an explicit
+ * `sabpaisa: true`.
  *
- * @returns {Promise<number[]>}
+ * @returns {Promise<Array<number|'sabpaisa'>>}
  */
 export async function getPaymentGateways() {
   try {
     const response = await fetch('/api/payments/options');
     const payload = await response.json();
     const gateways = PAYMENT_GATEWAYS.filter((gateway) => payload?.merchants?.includes(gateway));
+    const airpay = response.ok && gateways.length > 0 ? gateways : [1];
 
-    return response.ok && gateways.length > 0 ? gateways : [1];
+    return response.ok && payload?.sabpaisa === true ? [...airpay, SABPAISA_GATEWAY] : airpay;
   } catch (error) {
     return [1];
   }
@@ -195,6 +201,82 @@ export function submitPayment(payment) {
 
   document.body.appendChild(form);
   form.submit();
+}
+
+/**
+ * Starts a SabPaisa payment for the current cart. Same request shape as
+ * createOnlinePayment() minus the merchant: the server prices the order,
+ * creates the pending order and the SabPaisa session, and answers with the
+ * hosted-checkout URL to send the customer to.
+ *
+ * @param {Object} params
+ * @param {{fullName: string, phone: string, address: string, landmark: string}} params.customer
+ * @param {Array} params.cartItems - Items from the cart context
+ * @returns {Promise<{order_ref: string, redirect_url: string}>}
+ */
+export async function createSabpaisaPayment({ customer, cartItems }) {
+  if (!cartItems || cartItems.length === 0) {
+    throw new Error('Cannot place an order with an empty cart.');
+  }
+
+  const items = cartItems.map((item) => ({
+    product_id: item.product.id,
+    size: item.product.sizes?.length > 0 ? item.variant.title : null,
+    quantity: item.quantity,
+  }));
+
+  const response = await fetch('/api/payments/sabpaisa/create', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ customer, items }),
+  });
+
+  const payload = await response.json().catch(() => null);
+
+  if (!response.ok || !payload) {
+    const error = new Error(payload?.error || 'We could not start the SabPaisa payment. Please try again.');
+
+    if (Array.isArray(payload?.invalid_items)) {
+      error.invalidItems = payload.invalid_items.map((index) => cartItems[index]).filter(Boolean);
+    }
+
+    throw error;
+  }
+
+  if (!isSabpaisaCheckoutUrl(payload.redirect_url)) {
+    throw new Error('We could not start the SabPaisa payment. Please choose another payment option.');
+  }
+
+  return payload;
+}
+
+/**
+ * Whether a URL is an HTTPS SabPaisa page. The server has already checked the
+ * provider's answer; this keeps the browser from following anything else.
+ *
+ * @param {string} value
+ * @returns {boolean}
+ */
+export function isSabpaisaCheckoutUrl(value) {
+  try {
+    const url = new URL(value);
+    const host = url.hostname.toLowerCase();
+
+    return url.protocol === 'https:' && (host === 'sabpaisa.in' || host.endsWith('.sabpaisa.in'));
+  } catch (error) {
+    return false;
+  }
+}
+
+/**
+ * Sends the customer to SabPaisa's hosted checkout. A plain navigation: the
+ * URL already carries the session's clientSecret, which SabPaisa requires, so
+ * it is never logged or stored here.
+ *
+ * @param {{redirect_url: string}} payment
+ */
+export function redirectToSabpaisa(payment) {
+  window.location.assign(payment.redirect_url);
 }
 
 /**

@@ -266,4 +266,154 @@ export function siteOrigin(req) {
   return host ? `https://${host}` : 'https://frontiva.online';
 }
 
+/**
+ * SabPaisa PG 3.0 production API. Fixed, not configurable: there is no
+ * environment switch to a staging host, and a SABPAISA_BASE_URL that names
+ * anything else is ignored rather than followed (see sabpaisaBaseUrlOverridden).
+ */
+export const SABPAISA_BASE_URL = 'https://merchant-api.sabpaisa.in';
+
+/** How long we wait on SabPaisa's APIs. Well inside the functions' 60s budget. */
+export const SABPAISA_TIMEOUT_MS = 20_000;
+
+/** The value orders.payment_gateway carries for a SabPaisa payment. */
+export const SABPAISA_GATEWAY = 'sabpaisa';
+
+/**
+ * Each SabPaisa role, by every variable name it may be configured under. The
+ * canonical SABPAISA_* name wins; the SUBPAISA_* spelling is what the
+ * deployment's environment was first set up with, and MERCHANT_ID is the
+ * unprefixed name the merchant ID was supplied under. No role ever falls back
+ * to a different role's variable.
+ */
+const SABPAISA_ENV_NAMES = {
+  apiKey: ['SABPAISA_API_KEY', 'SUBPAISA_API_KEY'],
+  secretKey: ['SABPAISA_SECRET_KEY', 'SUBPAISA_SECRET_KEY'],
+  merchantId: ['SABPAISA_MERCHANT_ID', 'SUBPAISA_MERCHANT_ID', 'MERCHANT_ID'],
+  clientCode: ['SABPAISA_CLIENT_CODE', 'SUBPAISA_CLIENT_CODE'],
+};
+
+function firstPresent(names) {
+  for (const name of names) {
+    const value = String(process.env[name] || '').trim();
+
+    if (value) {
+      return { name, value };
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Which variable name each SabPaisa role was read from, or null when none is
+ * set. Names only — for the health report.
+ *
+ * @returns {Record<string, string|null>}
+ */
+export function sabpaisaEnvNames() {
+  return Object.fromEntries(
+    Object.entries(SABPAISA_ENV_NAMES).map(([role, names]) => [role, firstPresent(names)?.name ?? null]),
+  );
+}
+
+/**
+ * SabPaisa credentials. Throws ConfigError when anything is missing, or when
+ * the API key is a sandbox key, so a staging credential can never be used
+ * against production by accident.
+ *
+ * Deliberately independent of SABPAISA_ENABLED: the flag only gates NEW
+ * payments, and orders already started must stay verifiable after it is
+ * switched off.
+ *
+ * @returns {{apiKey: string, secretKey: string, merchantId: string, clientCode: string, baseUrl: string}}
+ */
+export function loadSabpaisaConfig() {
+  const config = {};
+
+  for (const [role, names] of Object.entries(SABPAISA_ENV_NAMES)) {
+    const found = firstPresent(names);
+
+    if (!found) {
+      throw new ConfigError(`Missing required environment variable: ${names[0]}`);
+    }
+
+    config[role] = found.value;
+  }
+
+  if (/^sk_test_/i.test(config.apiKey)) {
+    throw new ConfigError('SABPAISA_API_KEY is a sandbox key');
+  }
+
+  return { ...config, baseUrl: SABPAISA_BASE_URL };
+}
+
+/** @returns {boolean} */
+export function isSabpaisaConfigured() {
+  try {
+    loadSabpaisaConfig();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The checkout switch. Only an explicit `true` enables new SabPaisa payments;
+ * unset, empty or anything else is off.
+ *
+ * @returns {boolean}
+ */
+export function sabpaisaEnabled() {
+  return String(process.env.SABPAISA_ENABLED || '').trim().toLowerCase() === 'true';
+}
+
+/**
+ * True when SABPAISA_BASE_URL is set to something other than the production
+ * API. The value is never used either way; this only lets the health report
+ * flag a stale staging setting.
+ *
+ * @returns {boolean}
+ */
+export function sabpaisaBaseUrlOverridden() {
+  const configured = String(process.env.SABPAISA_BASE_URL || '').trim().replace(/\/+$/, '');
+  return Boolean(configured) && configured !== SABPAISA_BASE_URL;
+}
+
+/**
+ * The email SabPaisa receives as customerEmail. The storefront does not collect
+ * a customer email, so this is a merchant-owned mailbox — the same convention
+ * the Airpay integration already uses (AIRPAY_FALLBACK_BUYER_EMAIL).
+ *
+ * @returns {string}
+ */
+export function sabpaisaBuyerEmail() {
+  return String(
+    process.env.SABPAISA_BUYER_EMAIL || process.env.AIRPAY_FALLBACK_BUYER_EMAIL || 'orders@frontiva.online',
+  ).trim();
+}
+
+/**
+ * Origin of the SabPaisa returnUrl (`<origin>/success?ref=...`). Must match the
+ * return URL approved on the SabPaisa account, so it is independent of
+ * PUBLIC_SITE_ORIGIN, which the Airpay MIDs depend on. HTTPS only.
+ *
+ * @returns {string} Origin with no trailing slash
+ */
+export function sabpaisaReturnOrigin() {
+  const configured = String(process.env.SABPAISA_RETURN_ORIGIN || '').trim().replace(/\/+$/, '');
+
+  return /^https:\/\/[a-z0-9.-]+$/i.test(configured) ? configured : 'https://frontiva.online';
+}
+
+/**
+ * Whether checkout may START a SabPaisa payment: switched on and fully
+ * configured. Never tied to AIRPAY_ENABLED_MERCHANTS.
+ *
+ * @returns {boolean}
+ */
+export function sabpaisaAvailable() {
+  return sabpaisaEnabled() && isSabpaisaConfigured();
+}
+
 export { ConfigError };

@@ -9,7 +9,15 @@ import { Textarea } from '@/components/ui/textarea';
 import { useCart } from '@/hooks/useCart';
 import { useToast } from '@/hooks/use-toast';
 import { formatCurrency, getCartItemSize } from '@/api/EcommerceApi';
-import { createCodOrder, createOnlinePayment, getPaymentGateways, submitPayment } from '@/api/OrdersApi';
+import {
+  SABPAISA_GATEWAY,
+  createCodOrder,
+  createOnlinePayment,
+  createSabpaisaPayment,
+  getPaymentGateways,
+  redirectToSabpaisa,
+  submitPayment,
+} from '@/api/OrdersApi';
 import Header from '@/components/Header';
 import Footer from '@/components/Footer';
 import ShoppingCart from '@/components/ShoppingCart';
@@ -34,6 +42,7 @@ const PAYMENT_GATEWAYS = [
   { id: 1, label: 'Pay with Airpay 1' },
   { id: 2, label: 'Pay with Airpay 2' },
   { id: 3, label: 'Pay with Airpay 3' },
+  { id: SABPAISA_GATEWAY, label: 'Pay with SabPaisa' },
 ];
 
 const CheckoutPage = () => {
@@ -126,6 +135,18 @@ const CheckoutPage = () => {
       nextErrors.gateway = 'Please choose a payment gateway.';
     }
 
+    // SabPaisa's own rules on top of the ones above, applied only when it is
+    // the chosen gateway so every other option validates exactly as before.
+    if (paymentMethod === 'online' && gateway === SABPAISA_GATEWAY) {
+      if (!nextErrors.fullName && !/^[A-Za-z ]{2,100}$/.test(customerInfo.fullName.trim().replace(/\s+/g, ' '))) {
+        nextErrors.fullName = 'For SabPaisa, use letters and spaces only.';
+      }
+
+      if (!nextErrors.phone && !/^[6-9]\d{9}$/.test(customerInfo.phone)) {
+        nextErrors.phone = 'For SabPaisa, enter a valid Indian mobile number.';
+      }
+    }
+
     return nextErrors;
   };
 
@@ -156,6 +177,30 @@ const CheckoutPage = () => {
     }
 
     setIsProcessing(true);
+
+    if (paymentMethod === 'online' && gateway === SABPAISA_GATEWAY) {
+      try {
+        const payment = await createSabpaisaPayment({ customer: customerInfo, cartItems });
+
+        // As with Airpay, the cart stays intact until /success confirms the
+        // payment. isProcessing stays set so the button cannot submit again
+        // while the browser leaves for SabPaisa.
+        redirectToSabpaisa(payment);
+      } catch (error) {
+        if (error.invalidItems?.length > 0) {
+          setRejectedItems(error.invalidItems);
+        }
+
+        toast({
+          title: 'Could not start SabPaisa payment',
+          description: error.message || 'Please try again, or choose another payment option.',
+          variant: 'destructive',
+        });
+        setIsProcessing(false);
+      }
+
+      return;
+    }
 
     if (paymentMethod === 'online') {
       try {

@@ -828,7 +828,7 @@ describe('GET /api/payments/options', () => {
   const options = async () => (await call(optionsHandler, { method: 'GET', url: '/api/payments/options' })).json();
 
   test('lists both merchants when both are configured', async () => {
-    assert.deepEqual(await options(), { merchants: [1, 2] });
+    assert.deepEqual(await options(), { merchants: [1, 2], sabpaisa: false });
   });
 
   test('lists merchant 1 alone when merchant 2 is not configured', async () => {
@@ -836,7 +836,7 @@ describe('GET /api/payments/options', () => {
       delete process.env[name];
     }
 
-    assert.deepEqual(await options(), { merchants: [1] });
+    assert.deepEqual(await options(), { merchants: [1], sabpaisa: false });
   });
 
   test('returns numbers only — no MID and no credential', async () => {
@@ -1831,7 +1831,7 @@ describe('a third merchant on the shared arp_frontiva callback path', () => {
     test('options lists merchant 3 by number only', async () => {
       const response = await call(optionsHandler, { method: 'GET', url: '/api/payments/options' });
 
-      assert.deepEqual(response.json(), { merchants: [1, 2, 3] });
+      assert.deepEqual(response.json(), { merchants: [1, 2, 3], sabpaisa: false });
 
       for (const value of Object.values(M3)) {
         assert.ok(!response.body.includes(value));

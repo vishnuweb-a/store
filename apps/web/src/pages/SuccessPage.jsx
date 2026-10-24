@@ -68,18 +68,32 @@ const PENDING_VIEW = {
   settled: false,
 };
 
+/**
+ * SabPaisa has no callback here, so a returning customer's page asks the server
+ * again a few times while the payment is unresolved. Bounded, and the server
+ * throttles the enquiries behind it regardless.
+ */
+const SABPAISA_POLL_INTERVAL_MS = 10_000;
+const SABPAISA_MAX_POLLS = 6;
+const POLLABLE_STATUSES = new Set(['initiated', 'processing']);
+
 const SuccessPage = () => {
   const [isCartOpen, setIsCartOpen] = useState(false);
   const { clearCart } = useCart();
   const location = useLocation();
   const [searchParams] = useSearchParams();
 
-  // Present only when Airpay has just returned the customer to the site.
-  const paymentRef = searchParams.get('ref');
+  // Present only when a payment gateway has just returned the customer to the
+  // site. SabPaisa appends its own parameters to the return URL; should they
+  // ever be joined with a second `?` they would run into `ref`, so only the
+  // leading order reference is kept. The server looks it up and decides —
+  // none of SabPaisa's appended parameters are read.
+  const paymentRef = searchParams.get('ref')?.match(/^FRV[A-Z0-9]{5,61}/)?.[0] ?? searchParams.get('ref');
 
   const [onlineOrder, setOnlineOrder] = useState(null);
   const [isLoadingPayment, setIsLoadingPayment] = useState(Boolean(paymentRef));
   const [paymentError, setPaymentError] = useState(null);
+  const [pollCount, setPollCount] = useState(0);
 
   const order = paymentRef ? onlineOrder : location.state?.order || getLatestOrder();
 
@@ -116,6 +130,42 @@ const SuccessPage = () => {
       cancelled = true;
     };
   }, [paymentRef]);
+
+  const shouldPoll =
+    onlineOrder?.payment_gateway === 'sabpaisa' &&
+    POLLABLE_STATUSES.has(paymentStatus) &&
+    pollCount < SABPAISA_MAX_POLLS &&
+    !paymentError;
+
+  useEffect(() => {
+    if (!shouldPoll) {
+      return;
+    }
+
+    let cancelled = false;
+
+    const timer = setTimeout(() => {
+      getOnlineOrder(paymentRef)
+        .then((loaded) => {
+          if (!cancelled) {
+            setOnlineOrder(loaded);
+          }
+        })
+        .catch(() => {
+          // A failed poll is not an answer; the next one, or Refresh, will try again.
+        })
+        .finally(() => {
+          if (!cancelled) {
+            setPollCount((count) => count + 1);
+          }
+        });
+    }, SABPAISA_POLL_INTERVAL_MS);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [shouldPoll, paymentRef, pollCount]);
 
   useEffect(() => {
     // A failed or still-unconfirmed online payment must keep the cart, so the

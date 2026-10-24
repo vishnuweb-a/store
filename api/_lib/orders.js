@@ -10,10 +10,11 @@
  * `status` column is mirrored from it so the admin table keeps rendering.
  */
 import { classifyTransaction, confirmOrder } from './airpay.js';
-import { parseMerchant } from './config.js';
+import { SABPAISA_GATEWAY, loadSabpaisaConfig, parseMerchant } from './config.js';
 import { newOrderRef } from './crypto.js';
 import { logEvent } from './http.js';
 import { formatInr } from './pricing.js';
+import { confirmSabpaisaOrder, decideSabpaisaSettlement, logSabpaisa } from './sabpaisa.js';
 import { insert, select, update } from './supabase.js';
 
 export const ONLINE_PAYMENT_METHOD = 'Online Payment';
@@ -38,11 +39,17 @@ export const RECONCILABLE_STATUSES = ['initiated', 'processing', 'requires_revie
  * @param {Object[]} params.items - Server-priced lines
  * @param {number} params.totalInCents - Server-derived total
  * @param {1|2|3} [params.merchant] - Airpay merchant the payment is started on
+ * @param {'sabpaisa'} [params.gateway] - Set only for a SabPaisa payment.
+ *   Absent means Airpay, and the insert is exactly the one Airpay has always made.
  * @returns {Promise<{id: number, order_ref: string, created_at: string}>}
  */
-export async function createPendingOrder({ customer, items, totalInCents, merchant = 1 }) {
+export async function createPendingOrder({ customer, items, totalInCents, merchant = 1, gateway }) {
   const orderRef = newOrderRef();
   const now = new Date().toISOString();
+
+  if (gateway !== undefined) {
+    return createPendingGatewayOrder({ customer, items, totalInCents, gateway, orderRef, now });
+  }
 
   const id = parseMerchant(merchant);
 
@@ -56,6 +63,39 @@ export async function createPendingOrder({ customer, items, totalInCents, mercha
     // already carries — and it keeps merchant 1's insert identical to the one
     // in production, so it does not depend on the new column existing.
     ...(id !== 1 ? { airpay_merchant: id } : {}),
+    customer_name: customer.fullName,
+    phone: customer.phone,
+    address: customer.address,
+    landmark: customer.landmark,
+    payment_method: ONLINE_PAYMENT_METHOD,
+    status: 'initiated',
+    payment_status: 'initiated',
+    total: totalInCents / 100,
+    items,
+    order_ref: orderRef,
+    updated_at: now,
+  });
+
+  if (!row) {
+    throw new Error('Order could not be created');
+  }
+
+  return row;
+}
+
+/**
+ * The pending-order insert for a non-Airpay gateway. Kept apart from the Airpay
+ * insert above so that one stays byte-for-byte what production has run. Never
+ * names airpay_merchant: a SabPaisa order belongs to no Airpay account.
+ */
+async function createPendingGatewayOrder({ customer, items, totalInCents, gateway, orderRef, now }) {
+  if (gateway !== SABPAISA_GATEWAY) {
+    throw new Error('Order could not be created');
+  }
+
+  const [row] = await insert('orders', {
+    payment_gateway: SABPAISA_GATEWAY,
+    enquiry_count: 0,
     customer_name: customer.fullName,
     phone: customer.phone,
     address: customer.address,
@@ -133,6 +173,9 @@ export function presentOrder(row) {
     status: row.status,
     payment_status: row.payment_status || row.status,
     payment_method: row.payment_method,
+    // Which online gateway, so the confirmation page knows whether to poll.
+    // Null for Airpay and COD, as stored.
+    payment_gateway: row.payment_gateway || null,
     verified_at: row.verified_at || null,
     customer: {
       full_name: row.customer_name,
@@ -224,6 +267,21 @@ export async function settleOrder(orderRef, deps = {}) {
     return { order, status: current, changed: false };
   }
 
+  // Provider dispatch. The gateway is read from the server-written order row,
+  // never from a callback or request, so an Airpay callback naming a SabPaisa
+  // order can only ever trigger a SabPaisa enquiry about it.
+  const gateway = order.payment_gateway ?? null;
+
+  if (gateway === SABPAISA_GATEWAY) {
+    return settleViaSabpaisa(order, deps);
+  }
+
+  if (gateway !== null && gateway !== 'airpay') {
+    logEvent('payment.settle.unknown_gateway', { order_ref: orderRef });
+    return { order, status: current, changed: false, reason: 'unknown gateway' };
+  }
+
+  // NULL (and 'airpay') is the original Airpay path, unchanged below.
   const merchant = merchantForOrder(order);
 
   if (!merchant) {
@@ -303,6 +361,171 @@ export async function settleOrder(orderRef, deps = {}) {
 }
 
 /**
+ * SabPaisa enquiry policy. SabPaisa allows 100 status polls per payment; the
+ * automatic paths (confirmation page + reconciliation) stop at
+ * SABPAISA_AUTO_ENQUIRY_BUDGET so the rest stays available to an operator.
+ */
+export const SABPAISA_AUTO_ENQUIRY_BUDGET = 60;
+
+/** Minimum gap between two enquiries about one order, from any caller. */
+export const SABPAISA_MIN_ENQUIRY_INTERVAL_MS = 8_000;
+
+/**
+ * How long a SabPaisa order may stay unresolved (not found, provider
+ * unreachable) before it is parked in requires_review for a person. It is still
+ * re-checked by reconciliation afterwards, so a late success is not lost.
+ */
+export const SABPAISA_REVIEW_AFTER_MS = 2 * 60 * 60_000;
+
+/**
+ * Claims the right to make one enquiry about an order. A conditional UPDATE
+ * that only matches while the order is open, its enquiry count is still what
+ * we read, and the last enquiry is old enough — so concurrent page loads and
+ * reconciliation runs cannot both spend an enquiry, and the count is exact.
+ *
+ * @returns {Promise<boolean>} true when this caller may enquire
+ */
+async function claimSabpaisaEnquiry(order, { applyUpdate, now, minIntervalMs }) {
+  const count = Number.isSafeInteger(order.enquiry_count) ? order.enquiry_count : 0;
+  const cutoff = new Date(now - minIntervalMs).toISOString();
+
+  const claimed = await applyUpdate(
+    'orders',
+    `order_ref=eq.${encodeURIComponent(order.order_ref)}` +
+      `&payment_gateway=eq.${SABPAISA_GATEWAY}` +
+      `&payment_status=in.(${OPEN_STATUSES.join(',')})` +
+      (Number.isSafeInteger(order.enquiry_count) ? `&enquiry_count=eq.${count}` : '&enquiry_count=is.null') +
+      `&or=(last_checked_at.is.null,last_checked_at.lt.${encodeURIComponent(cutoff)})`,
+    { enquiry_count: count + 1, last_checked_at: new Date(now).toISOString() },
+  );
+
+  return claimed.length > 0;
+}
+
+/**
+ * settleOrder() for an order placed through SabPaisa. Same contract and the
+ * same conditional-UPDATE idempotency barrier as the Airpay path; the evidence
+ * is SabPaisa's Transaction Enquiry answer and nothing else.
+ */
+async function settleViaSabpaisa(order, deps) {
+  const orderRef = order.order_ref;
+  const current = order.payment_status || order.status;
+  const findOrder = deps.findOrder || findOrderByRef;
+  const applyUpdate = deps.applyUpdate || update;
+  const enquire = deps.sabpaisaConfirm || confirmSabpaisaOrder;
+  const now = (deps.now || Date.now)();
+  const count = Number.isSafeInteger(order.enquiry_count) ? order.enquiry_count : 0;
+  const pastReviewWindow = now - Date.parse(order.created_at) > SABPAISA_REVIEW_AFTER_MS;
+
+  if (count >= SABPAISA_AUTO_ENQUIRY_BUDGET) {
+    // The automatic budget is spent. Park it for a person rather than keep
+    // asking — and never decide failure from silence.
+    return parkForReview(order, 'enquiry budget exhausted', { applyUpdate, findOrder, now });
+  }
+
+  const claimEnquiry = deps.claimEnquiry || claimSabpaisaEnquiry;
+  const claimed = await claimEnquiry(order, {
+    applyUpdate,
+    now,
+    minIntervalMs: deps.minEnquiryIntervalMs ?? SABPAISA_MIN_ENQUIRY_INTERVAL_MS,
+  });
+
+  if (!claimed) {
+    // Checked moments ago, or being checked right now by another caller.
+    return { order, status: current, changed: false, reason: 'enquiry throttled' };
+  }
+
+  let config = null;
+
+  try {
+    config = deps.sabpaisaConfig || loadSabpaisaConfig();
+  } catch {
+    // Reported by the enquiry as not_configured.
+  }
+
+  const expectedInPaise = Math.round(Number(order.total) * 100);
+  const enquiry = await enquire(orderRef, config ? { config } : {});
+  const decision = decideSabpaisaSettlement(enquiry, { orderRef, expectedInPaise, config, pastReviewWindow });
+
+  if (decision.status !== 'paid') {
+    logSabpaisa('payment.settle.sabpaisa_not_paid', {
+      order_ref: orderRef,
+      decided: decision.status,
+      reason: decision.reason,
+      outcome: enquiry.outcome,
+      provider_status: enquiry.status ?? null,
+      http_status: enquiry.httpStatus ?? null,
+      trace_id: enquiry.traceId ?? null,
+      expected_in_paise: expectedInPaise,
+      confirmed_in_paise: enquiry.amountPaise ?? null,
+      enquiry_count: count + 1,
+    });
+  }
+
+  if (decision.status === null || decision.status === current) {
+    return { order: (await findOrder(orderRef)) || order, status: current, changed: false, reason: decision.reason };
+  }
+
+  const stamp = new Date(now).toISOString();
+  const patch = { payment_status: decision.status, status: decision.status, updated_at: stamp };
+
+  if (enquiry.outcome === 'answered') {
+    patch.verified_at = stamp;
+  }
+
+  if (decision.status === 'paid') {
+    patch.paid_at = stamp;
+  }
+
+  if (enquiry.outcome === 'answered' && enquiry.merchantTxnId === orderRef && enquiry.txnId) {
+    patch.gateway_txn_id = enquiry.txnId;
+  }
+
+  return applySabpaisaTransition(orderRef, patch, { applyUpdate, findOrder, current, reason: decision.reason });
+}
+
+async function parkForReview(order, reason, { applyUpdate, findOrder, now }) {
+  const current = order.payment_status || order.status;
+
+  if (current === 'requires_review') {
+    return { order, status: current, changed: false, reason };
+  }
+
+  logEvent('payment.settle.sabpaisa_review', { order_ref: order.order_ref, reason });
+
+  return applySabpaisaTransition(
+    order.order_ref,
+    { payment_status: 'requires_review', status: 'requires_review', updated_at: new Date(now).toISOString() },
+    { applyUpdate, findOrder, current, reason },
+  );
+}
+
+/** The SabPaisa idempotency barrier: only an order that is still open moves. */
+async function applySabpaisaTransition(orderRef, patch, { applyUpdate, findOrder, current, reason }) {
+  const updated = await applyUpdate(
+    'orders',
+    `order_ref=eq.${encodeURIComponent(orderRef)}` +
+      `&payment_gateway=eq.${SABPAISA_GATEWAY}` +
+      `&payment_status=in.(${OPEN_STATUSES.join(',')})`,
+    patch,
+  );
+
+  if (updated.length === 0) {
+    const latest = await findOrder(orderRef);
+    return {
+      order: latest,
+      status: latest?.payment_status ?? latest?.status ?? current,
+      changed: false,
+      reason: 'already settled by a concurrent check',
+    };
+  }
+
+  logEvent('payment.settle.applied', { order_ref: orderRef, gateway: SABPAISA_GATEWAY, status: patch.payment_status });
+
+  return { order: updated[0], status: patch.payment_status, changed: true, reason };
+}
+
+/**
  * Records a callback delivery for audit and duplicate detection. The unique
  * index on payment_events.dedupe_key makes a redelivery a no-op insert.
  *
@@ -336,9 +559,12 @@ export async function recordCallback({ orderRef, dedupeKey, payload }) {
  * @param {number} [options.olderThanMinutes] - Grace period before an order is
  *   considered stuck; a customer may still be on the Airpay page.
  * @param {number} [options.limit]
+ * @param {boolean} [options.airpayOnly] - Leave SabPaisa orders out, so they
+ *   cannot take Airpay's places in a bounded batch. Needs the payment_gateway
+ *   column (migrations-sabpaisa.sql).
  * @returns {Promise<Object[]>}
  */
-export async function listUnresolvedOrders({ olderThanMinutes = 10, limit = 50 } = {}) {
+export async function listUnresolvedOrders({ olderThanMinutes = 10, limit = 50, airpayOnly = false } = {}) {
   const cutoff = new Date(Date.now() - olderThanMinutes * 60_000).toISOString();
 
   return select(
@@ -348,8 +574,60 @@ export async function listUnresolvedOrders({ olderThanMinutes = 10, limit = 50 }
       // Includes payment_status IS NULL so orders written before the column
       // existed are swept too, rather than being stuck open forever.
       `&or=(payment_status.in.(${RECONCILABLE_STATUSES.join(',')}),payment_status.is.null)` +
+      // NULL is Airpay; `neq` alone would drop NULL rows in SQL.
+      (airpayOnly ? `&and=(or(payment_gateway.is.null,payment_gateway.eq.airpay))` : '') +
       `&order_ref=not.is.null` +
       `&created_at=lt.${encodeURIComponent(cutoff)}` +
       `&order=created_at.asc&limit=${Number(limit)}`,
   );
+}
+
+/**
+ * Whether a database error is PostgREST saying a column does not exist —
+ * i.e. migrations-sabpaisa.sql has not been run yet.
+ *
+ * @param {Error & {status?: number}} error
+ * @returns {boolean}
+ */
+export function isMissingColumnError(error) {
+  return Boolean(error?.isDatabaseError) && /column|schema cache/i.test(String(error.message || ''));
+}
+
+/** Reconciliation spacing for one SabPaisa order: frequent at first, then hourly. */
+export function sabpaisaRecheckIntervalMs(enquiryCount) {
+  return Number(enquiryCount) < 20 ? 10 * 60_000 : 60 * 60_000;
+}
+
+/**
+ * SabPaisa orders reconciliation should ask about now: open, past the grace
+ * period, and not checked within their recheck interval, least recently checked
+ * first. Rows whose automatic budget is spent are still listed until they have
+ * been parked in requires_review. Its own bounded query, so it never displaces
+ * Airpay orders.
+ *
+ * @param {{olderThanMinutes?: number, limit?: number, now?: number}} [options]
+ * @returns {Promise<Object[]>}
+ */
+export async function listSabpaisaDue({ olderThanMinutes = 10, limit = 10, now = Date.now() } = {}) {
+  const cutoff = new Date(now - olderThanMinutes * 60_000).toISOString();
+  const checkedBefore = new Date(now - sabpaisaRecheckIntervalMs(0)).toISOString();
+
+  const rows = await select(
+    'orders',
+    `select=order_ref,status,payment_status,created_at,enquiry_count,last_checked_at` +
+      `&payment_method=eq.${encodeURIComponent(ONLINE_PAYMENT_METHOD)}` +
+      `&payment_gateway=eq.${SABPAISA_GATEWAY}` +
+      `&payment_status=in.(${RECONCILABLE_STATUSES.join(',')})` +
+      `&or=(enquiry_count.lt.${SABPAISA_AUTO_ENQUIRY_BUDGET},payment_status.neq.requires_review)` +
+      `&created_at=lt.${encodeURIComponent(cutoff)}` +
+      `&and=(or(last_checked_at.is.null,last_checked_at.lt.${encodeURIComponent(checkedBefore)}))` +
+      `&order=last_checked_at.asc.nullsfirst&limit=${Number(limit) * 5}`,
+  );
+
+  return rows
+    .filter((row) => {
+      const last = row.last_checked_at ? Date.parse(row.last_checked_at) : 0;
+      return now - last >= sabpaisaRecheckIntervalMs(row.enquiry_count);
+    })
+    .slice(0, Number(limit));
 }

@@ -23,6 +23,11 @@ const SENSITIVE_KEYS = new Set([
   'password',
   'access_token',
   'token',
+  // SabPaisa checkout authentication: the session secret, and the checkout URL
+  // it is appended to.
+  'clientsecret',
+  'checkouturl',
+  'redirect_url',
   // Instrument details.
   'card',
   'cardnumber',
@@ -152,6 +157,10 @@ export function scrubSecrets(text, limit = 300) {
     process.env.AIRPAY_PASSWORD_2,
     process.env.AIRPAY_USERNAME_2,
     process.env.AIRPAY_CLIENT_ID_2,
+    process.env.SABPAISA_API_KEY,
+    process.env.SABPAISA_SECRET_KEY,
+    process.env.SUBPAISA_API_KEY,
+    process.env.SUBPAISA_SECRET_KEY,
     process.env.SUPABASE_SERVICE_ROLE,
     process.env.CRON_SECRET,
   ].filter((value) => value && String(value).length >= 4);
