@@ -234,7 +234,12 @@ export async function createSabpaisaPayment({ orderRef, amountInPaise, customer,
       `${config.baseUrl}/api/v2/payments`,
       {
         method: 'POST',
-        headers: { 'X-Api-Key': config.apiKey, 'Content-Type': 'application/json', Accept: 'application/json' },
+        headers: {
+          'X-Api-Key': config.apiKey,
+          'X-Merchant-Id': config.merchantId,
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+        },
         body: JSON.stringify(body),
       },
       SABPAISA_TIMEOUT_MS,
@@ -347,7 +352,12 @@ export async function confirmSabpaisaOrder(orderRef, deps = {}) {
       `${config.baseUrl}/api/v2/payments/enquiry`,
       {
         method: 'POST',
-        headers: { 'X-Api-Key': config.apiKey, 'Content-Type': 'application/json', Accept: 'application/json' },
+        headers: {
+          'X-Api-Key': config.apiKey,
+          'X-Merchant-Id': config.merchantId,
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+        },
         body: JSON.stringify({ clientCode: config.clientCode, merchantTxnId: orderRef }),
       },
       SABPAISA_TIMEOUT_MS,

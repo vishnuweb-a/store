@@ -665,6 +665,7 @@ describe('POST /api/payments/sabpaisa/create', () => {
     assert.ok(Math.abs(body.timestamp - Date.now() / 1000) < 5);
     assert.equal(body.checksum, generateSabpaisaChecksum(body, SABPAISA_ENV.SABPAISA_SECRET_KEY));
     assert.equal(headers['X-Api-Key'], SABPAISA_ENV.SABPAISA_API_KEY);
+    assert.equal(headers['X-Merchant-Id'], SABPAISA_ENV.SABPAISA_MERCHANT_ID);
   });
 
   test('ignores any price the browser sends', async () => {
@@ -828,6 +829,7 @@ describe('confirmSabpaisaOrder', () => {
     assert.equal(request.url, 'https://merchant-api.sabpaisa.in/api/v2/payments/enquiry');
     assert.deepEqual(JSON.parse(request.options.body), { clientCode: 'CLNT1', merchantTxnId: REF });
     assert.equal(request.options.headers['X-Api-Key'], CONFIG.apiKey);
+    assert.equal(request.options.headers['X-Merchant-Id'], CONFIG.merchantId);
   });
 
   test('reads amountPaise as the amount and cross-checks paidAmount in paise', async () => {
