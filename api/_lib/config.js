@@ -360,12 +360,13 @@ export function isSabpaisaConfigured() {
 
 /**
  * The checkout switch. Only an explicit `true` enables new SabPaisa payments;
- * unset, empty or anything else is off.
+ * unset, empty or anything else is off. SABPAISA_ENABLED wins when set; the
+ * SUBPAISA_ENABLED spelling is read only in its absence, as for the credentials.
  *
  * @returns {boolean}
  */
 export function sabpaisaEnabled() {
-  return String(process.env.SABPAISA_ENABLED || '').trim().toLowerCase() === 'true';
+  return firstPresent(['SABPAISA_ENABLED', 'SUBPAISA_ENABLED'])?.value.toLowerCase() === 'true';
 }
 
 /**

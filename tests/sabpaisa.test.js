@@ -67,6 +67,7 @@ const SABPAISA_VARIABLES = [
   'SUBPAISA_SECRET_KEY',
   'SUBPAISA_CLIENT_CODE',
   'SUBPAISA_MERCHANT_ID',
+  'SUBPAISA_ENABLED',
   'MERCHANT_ID',
   'MERCHANT_NAME',
 ];
@@ -543,6 +544,15 @@ describe('SabPaisa configuration', () => {
 
     process.env.SABPAISA_ENABLED = ' TRUE ';
     assert.equal(sabpaisaEnabled(), true);
+  });
+
+  test('reads SUBPAISA_ENABLED only when SABPAISA_ENABLED is unset', () => {
+    delete process.env.SABPAISA_ENABLED;
+    process.env.SUBPAISA_ENABLED = 'true';
+    assert.equal(sabpaisaEnabled(), true);
+
+    process.env.SABPAISA_ENABLED = 'false';
+    assert.equal(sabpaisaEnabled(), false);
   });
 
   test('is independent of AIRPAY_ENABLED_MERCHANTS', () => {
