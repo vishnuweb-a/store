@@ -28,6 +28,11 @@ import {
   sabpaisaReturnOrigin,
   siteOrigin,
 } from './_lib/config.js';
+import {
+  frontivaPayinAvailable,
+  frontivaPayinEnabled,
+  isFrontivaPayinConfigured,
+} from './_lib/frontiva-payin.js';
 import { allowMethods, isCronAuthorized, json, logEvent } from './_lib/http.js';
 
 export const config = { maxDuration: 60 };
@@ -103,8 +108,15 @@ export default async function handler(req, res) {
     env_names: sabpaisaEnvNames(),
   };
 
+  // Frontiva PayIn: booleans only, no live login. Never part of `ok`.
+  const frontivaPayin = {
+    configured: isFrontivaPayinConfigured(),
+    enabled: frontivaPayinEnabled(),
+    offered_at_checkout: frontivaPayinAvailable(),
+  };
+
   if (!isCronAuthorized(req)) {
-    json(res, ready ? 200 : 503, { ok: ready, configured, merchants, environment, sabpaisa });
+    json(res, ready ? 200 : 503, { ok: ready, configured, merchants, environment, sabpaisa, frontiva_payin: frontivaPayin });
     return;
   }
 
@@ -138,6 +150,7 @@ export default async function handler(req, res) {
       oauth: { ok: true, expires_in: expiresIn },
       ...oauthByMerchant,
       sabpaisa,
+      frontiva_payin: frontivaPayin,
     });
   } catch (error) {
     logEvent('payment.health.oauth_failed', {
@@ -154,6 +167,7 @@ export default async function handler(req, res) {
       oauth: { ok: false, reason: error?.detail || 'authentication failed' },
       ...oauthByMerchant,
       sabpaisa,
+      frontiva_payin: frontivaPayin,
     });
   }
 }

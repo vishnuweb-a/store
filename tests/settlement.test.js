@@ -374,3 +374,17 @@ describe('presentOrder', () => {
     assert.equal(presented.status, 'paid');
   });
 });
+
+import { maskCustomer } from '../api/payments/status.js';
+
+describe('status endpoint PII masking', () => {
+  test('never returns full name, phone or address', () => {
+    const masked = maskCustomer(presentOrder({ ...ONLINE_ORDER, customer_name: 'Asha Menon', phone: '9876543210', address: '12 MG Road', landmark: 'Temple' }));
+    const text = JSON.stringify(masked.customer);
+
+    assert.equal(masked.customer.full_name, 'Asha M.');
+    assert.equal(masked.customer.phone, '******3210');
+    assert.ok(!/Menon|9876543210|MG Road|Temple/.test(text));
+    assert.equal(masked.order_number, 'FRV-00042');
+  });
+});

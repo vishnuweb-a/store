@@ -8,6 +8,7 @@
  * If the order is still open — the customer beat the callback back to the site
  * — one settlement attempt is made so the page can resolve on first load.
  */
+import { findFrontivaPayinIntent } from '../_lib/frontiva-payin-orders.js';
 import { allowMethods, json, logEvent } from '../_lib/http.js';
 import { ONLINE_PAYMENT_METHOD, findOrderByRef, presentOrder, settleOrder } from '../_lib/orders.js';
 
@@ -19,6 +20,26 @@ export const config = { maxDuration: 60 };
  * would not change that.
  */
 const RETRY_ON_READ = new Set(['initiated', 'processing']);
+
+/**
+ * The order ref is the only credential this endpoint checks, so the response
+ * carries a masked customer: enough for the buyer to recognise their order,
+ * not enough to leak a name, phone or address to anyone who obtains a ref.
+ */
+export function maskCustomer(order) {
+  const [first = '', ...rest] = String(order.customer.full_name || '').trim().split(/\s+/);
+  const phone = String(order.customer.phone || '');
+
+  return {
+    ...order,
+    customer: {
+      full_name: rest.length ? `${first} ${rest[rest.length - 1][0]}.` : first,
+      phone: phone ? `******${phone.slice(-4)}` : '',
+      address: 'Saved delivery address',
+      landmark: '',
+    },
+  };
+}
 
 export default async function handler(req, res) {
   if (!allowMethods(req, res, ['GET'])) {
@@ -49,7 +70,11 @@ export default async function handler(req, res) {
       order = settled.order || order;
     }
 
-    json(res, 200, { order: presentOrder(order) });
+    // Frontiva PayIn only: the QR to restore while the order is still payable,
+    // and only for a caller that holds this checkout's attempt id (`k`).
+    const intent = await findFrontivaPayinIntent(order, url.searchParams.get('k'));
+
+    json(res, 200, { order: maskCustomer(presentOrder(order)), ...(intent ? { payment_intent: intent } : {}) });
   } catch (error) {
     logEvent('payment.status.failed', {
       kind: error?.isConfigError ? 'config' : error?.isDatabaseError ? 'database' : 'unexpected',

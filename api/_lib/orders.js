@@ -12,6 +12,8 @@
 import { classifyTransaction, confirmOrder } from './airpay.js';
 import { SABPAISA_GATEWAY, loadSabpaisaConfig, parseMerchant } from './config.js';
 import { newOrderRef } from './crypto.js';
+import { FRONTIVA_PAYIN_GATEWAY } from './frontiva-payin.js';
+import { settleFrontivaPayinOrder } from './frontiva-payin-orders.js';
 import { logEvent } from './http.js';
 import { formatInr } from './pricing.js';
 import { confirmSabpaisaOrder, decideSabpaisaSettlement, logSabpaisa } from './sabpaisa.js';
@@ -39,12 +41,13 @@ export const RECONCILABLE_STATUSES = ['initiated', 'processing', 'requires_revie
  * @param {Object[]} params.items - Server-priced lines
  * @param {number} params.totalInCents - Server-derived total
  * @param {1|2|3} [params.merchant] - Airpay merchant the payment is started on
- * @param {'sabpaisa'} [params.gateway] - Set only for a SabPaisa payment.
+ * @param {'sabpaisa'|'frontiva_payin'} [params.gateway] - Set only for a non-Airpay payment.
  *   Absent means Airpay, and the insert is exactly the one Airpay has always made.
+ * @param {string} [params.orderRef] - Pre-generated reference (Frontiva PayIn claims its attempt first)
  * @returns {Promise<{id: number, order_ref: string, created_at: string}>}
  */
-export async function createPendingOrder({ customer, items, totalInCents, merchant = 1, gateway }) {
-  const orderRef = newOrderRef();
+export async function createPendingOrder({ customer, items, totalInCents, merchant = 1, gateway, orderRef: givenRef }) {
+  const orderRef = gateway !== undefined && givenRef ? givenRef : newOrderRef();
   const now = new Date().toISOString();
 
   if (gateway !== undefined) {
@@ -89,12 +92,12 @@ export async function createPendingOrder({ customer, items, totalInCents, mercha
  * names airpay_merchant: a SabPaisa order belongs to no Airpay account.
  */
 async function createPendingGatewayOrder({ customer, items, totalInCents, gateway, orderRef, now }) {
-  if (gateway !== SABPAISA_GATEWAY) {
+  if (gateway !== SABPAISA_GATEWAY && gateway !== FRONTIVA_PAYIN_GATEWAY) {
     throw new Error('Order could not be created');
   }
 
   const [row] = await insert('orders', {
-    payment_gateway: SABPAISA_GATEWAY,
+    payment_gateway: gateway,
     enquiry_count: 0,
     customer_name: customer.fullName,
     phone: customer.phone,
@@ -274,6 +277,11 @@ export async function settleOrder(orderRef, deps = {}) {
 
   if (gateway === SABPAISA_GATEWAY) {
     return settleViaSabpaisa(order, deps);
+  }
+
+  if (gateway === FRONTIVA_PAYIN_GATEWAY) {
+    // Portal status endpoint only; never Airpay, never KKChat.
+    return settleFrontivaPayinOrder(order, deps);
   }
 
   if (gateway !== null && gateway !== 'airpay') {

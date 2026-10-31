@@ -11,7 +11,8 @@
     "test": "node --test \"tests/*.test.js\""
   },
   "devDependencies": {
-    "concurrently": "^10.0.3"
+    "concurrently": "^10.0.3",
+    "jsqr": "^1.4.0"
   },
   "workspaces": [
     "apps/*"

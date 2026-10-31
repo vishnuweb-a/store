@@ -2,13 +2,15 @@ import React, { useEffect, useState } from 'react';
 import { Helmet } from 'react-helmet';
 import { Link, useLocation, useSearchParams } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { AlertCircle, ArrowRight, Banknote, CheckCircle, Clock, CreditCard, Loader2, MapPin, Phone, User } from 'lucide-react';
+import { QRCodeSVG } from 'qrcode.react';
+import { AlertCircle, ArrowRight, Banknote, CheckCircle, Clock, CreditCard, Loader2, MapPin, Phone, QrCode, Smartphone, User } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import Header from '@/components/Header';
 import Footer from '@/components/Footer';
 import ShoppingCart from '@/components/ShoppingCart';
 import { useCart } from '@/hooks/useCart';
-import { getLatestOrder, getOnlineOrder } from '@/api/OrdersApi';
+import { useIsMobile } from '@/hooks/use-mobile';
+import { FRONTIVA_PAYIN_GATEWAY, getLatestOrder, getOnlineOrder, isUpiPayIntent } from '@/api/OrdersApi';
 
 /**
  * How an online order's status is presented. COD orders never reach this map —
@@ -77,6 +79,25 @@ const SABPAISA_POLL_INTERVAL_MS = 10_000;
 const SABPAISA_MAX_POLLS = 6;
 const POLLABLE_STATUSES = new Set(['initiated', 'processing']);
 
+/**
+ * A QR customer still has to scan and pay, so the page polls longer (5 min).
+ * Bounded; afterwards "Check payment status" asks again, and the server
+ * throttles and reconciles regardless.
+ */
+const PAYIN_MAX_POLLS = 30;
+
+/** Mirrors FRONTIVA_QR_VALID_MS on the server: a QR is not offered as payable indefinitely. */
+const PAYIN_QR_VALID_MS = 30 * 60_000;
+
+const PAYIN_QR_VIEW = {
+  title: 'Scan to Pay',
+  heading: 'Scan to Pay',
+  message: 'Scan the QR code with any UPI app to pay. This page updates once your payment is confirmed.',
+  Icon: QrCode,
+  tone: 'bg-amber-100 text-amber-600',
+  settled: false,
+};
+
 const SuccessPage = () => {
   const [isCartOpen, setIsCartOpen] = useState(false);
   const { clearCart } = useCart();
@@ -90,17 +111,49 @@ const SuccessPage = () => {
   // none of SabPaisa's appended parameters are read.
   const paymentRef = searchParams.get('ref')?.match(/^FRV[A-Z0-9]{5,61}/)?.[0] ?? searchParams.get('ref');
 
+  // Frontiva PayIn only: proves this browser started the checkout, so the server may restore its QR.
+  const attemptKey = searchParams.get('k');
+
   const [onlineOrder, setOnlineOrder] = useState(null);
   const [isLoadingPayment, setIsLoadingPayment] = useState(Boolean(paymentRef));
   const [paymentError, setPaymentError] = useState(null);
   const [pollCount, setPollCount] = useState(0);
+  const [isChecking, setIsChecking] = useState(false);
+  const isMobile = useIsMobile();
 
   const order = paymentRef ? onlineOrder : location.state?.order || getLatestOrder();
 
   // payment_status is the authoritative online state; status mirrors it.
   const paymentStatus = onlineOrder?.payment_status || onlineOrder?.status;
 
-  const statusView = paymentRef ? ONLINE_STATUS_VIEWS[paymentStatus] || PENDING_VIEW : null;
+  const isPayin = onlineOrder?.payment_gateway === FRONTIVA_PAYIN_GATEWAY;
+  // Frontiva PayIn: the server's stored intent (survives a refresh), else the one
+  // checkout just handed over. Never re-created here; shown only while payable.
+  const qrFresh = Boolean(onlineOrder?.created_at) && Date.now() - Date.parse(onlineOrder.created_at) <= PAYIN_QR_VALID_MS;
+  const stateIntent = qrFresh && isUpiPayIntent(location.state?.payinIntent) ? location.state.payinIntent : null;
+  const payinIntent =
+    isPayin && POLLABLE_STATUSES.has(paymentStatus) ? onlineOrder.payment_intent || stateIntent : null;
+
+  const onlineView = paymentRef ? ONLINE_STATUS_VIEWS[paymentStatus] || PENDING_VIEW : null;
+  // payinIntent exists only for a loaded online order, so COD never sees it.
+  const statusView = payinIntent ? PAYIN_QR_VIEW : onlineView;
+
+  // A verification request only: it reads the server's verified status and never creates a payment.
+  const checkNow = () => {
+    setIsChecking(true);
+    getOnlineOrder(paymentRef, attemptKey)
+      .then((loaded) => {
+        setOnlineOrder(loaded);
+        setPaymentError(null);
+      })
+      .catch(() => {
+        // Not an answer; the order stays as last verified.
+      })
+      .finally(() => {
+        setIsChecking(false);
+        setPollCount(0);
+      });
+  };
 
   useEffect(() => {
     if (!paymentRef) {
@@ -109,7 +162,7 @@ const SuccessPage = () => {
 
     let cancelled = false;
 
-    getOnlineOrder(paymentRef)
+    getOnlineOrder(paymentRef, attemptKey)
       .then((loaded) => {
         if (!cancelled) {
           setOnlineOrder(loaded);
@@ -129,12 +182,14 @@ const SuccessPage = () => {
     return () => {
       cancelled = true;
     };
-  }, [paymentRef]);
+  }, [paymentRef, attemptKey]);
 
   const shouldPoll =
-    onlineOrder?.payment_gateway === 'sabpaisa' &&
+    // Gateways with no callback: the page asks the server to check again.
+    ['sabpaisa', 'frontiva_payin'].includes(onlineOrder?.payment_gateway) &&
     POLLABLE_STATUSES.has(paymentStatus) &&
-    pollCount < SABPAISA_MAX_POLLS &&
+    pollCount < (isPayin ? PAYIN_MAX_POLLS : SABPAISA_MAX_POLLS) &&
+    !isChecking &&
     !paymentError;
 
   useEffect(() => {
@@ -145,7 +200,7 @@ const SuccessPage = () => {
     let cancelled = false;
 
     const timer = setTimeout(() => {
-      getOnlineOrder(paymentRef)
+      getOnlineOrder(paymentRef, attemptKey)
         .then((loaded) => {
           if (!cancelled) {
             setOnlineOrder(loaded);
@@ -165,7 +220,7 @@ const SuccessPage = () => {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [shouldPoll, paymentRef, pollCount]);
+  }, [shouldPoll, paymentRef, attemptKey, pollCount]);
 
   useEffect(() => {
     // A failed or still-unconfirmed online payment must keep the cart, so the
@@ -236,6 +291,70 @@ const SuccessPage = () => {
                       : 'Your order has been placed successfully.'}
               </p>
             </motion.div>
+
+            {payinIntent && order && (
+              <motion.div
+                initial={{ opacity: 0, y: 12 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.4, delay: 0.15 }}
+                className="bg-card p-6 sm:p-8 rounded-xl shadow-sm mb-8 text-center"
+              >
+                <h2 className="font-display text-xl font-bold mb-4 text-card-foreground">Pay with UPI</h2>
+                <p className="font-semibold text-sm text-muted-foreground mb-1">Amount to pay</p>
+                <p className="text-3xl font-bold text-card-foreground mb-6">{order.total_formatted}</p>
+
+                {/* The QR is the validated provider intent, byte-for-byte. White quiet zone for scanners. */}
+                <div className="mx-auto w-full max-w-[320px] bg-white p-4 rounded-lg mb-4">
+                  <QRCodeSVG
+                    value={payinIntent}
+                    size={320}
+                    level="M"
+                    marginSize={4}
+                    bgColor="#ffffff"
+                    fgColor="#000000"
+                    className="w-full h-auto"
+                    role="img"
+                    aria-label={`UPI QR code to pay ${order.total_formatted}`}
+                  />
+                </div>
+
+                <p className="text-sm text-muted-foreground mb-6">
+                  Check that your UPI app shows <span className="font-semibold text-card-foreground">{order.total_formatted}</span> to
+                  Frontiva Trading Private Limited before you pay.
+                </p>
+
+                {isMobile && (
+                  <Button
+                    asChild
+                    size="lg"
+                    className="bg-primary text-primary-foreground hover:bg-primary/90 font-semibold w-full sm:w-auto mb-6"
+                  >
+                    <a href={payinIntent} aria-label={`Open your UPI app to pay ${order.total_formatted}`}>
+                      <Smartphone className="mr-2 h-5 w-5" aria-hidden="true" />
+                      Open UPI App
+                    </a>
+                  </Button>
+                )}
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-6 text-left border-t border-border pt-6">
+                  <div>
+                    <h3 className="font-semibold text-sm text-muted-foreground mb-1">Order Reference</h3>
+                    <p className="text-lg font-bold text-card-foreground break-all">{order.order_ref}</p>
+                  </div>
+                  <div>
+                    <h3 className="font-semibold text-sm text-muted-foreground mb-1">Payment Status</h3>
+                    <p className="text-lg font-bold text-amber-600 inline-flex items-center gap-2" aria-live="polite">
+                      <Loader2 className="h-5 w-5 animate-spin" aria-hidden="true" />
+                      {isChecking ? 'Verifying…' : 'Waiting for payment'}
+                    </p>
+                  </div>
+                </div>
+                <p className="text-xs text-muted-foreground mt-4 text-left">
+                  Scanning the code does not complete your order. It is confirmed only after we verify the payment with our
+                  payment partner.
+                </p>
+              </motion.div>
+            )}
 
             {order && (
               <motion.div
@@ -330,7 +449,13 @@ const SuccessPage = () => {
               transition={{ duration: 0.4, delay: 0.3 }}
               className="flex flex-col sm:flex-row gap-4 justify-center"
             >
-              {statusView && !statusView.settled && !paymentError && (
+              {statusView && !statusView.settled && !paymentError && isPayin && (
+                <Button size="lg" variant="outline" onClick={checkNow} disabled={isChecking} className="w-full sm:w-auto">
+                  {isChecking && <Loader2 className="mr-2 h-5 w-5 animate-spin" aria-hidden="true" />}
+                  Check Payment Status
+                </Button>
+              )}
+              {statusView && !statusView.settled && !paymentError && !isPayin && (
                 <Button
                   size="lg"
                   variant="outline"

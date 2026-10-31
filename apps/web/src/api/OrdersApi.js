@@ -91,6 +91,9 @@ export const PAYMENT_GATEWAYS = [1, 2, 3];
 /** The id the SabPaisa option is known by in the gateway list. */
 export const SABPAISA_GATEWAY = 'sabpaisa';
 
+/** The id the Frontiva PayIn option is known by in the gateway list. */
+export const FRONTIVA_PAYIN_GATEWAY = 'frontiva_payin';
+
 /**
  * Asks the server which online payment gateways are available right now.
  *
@@ -109,7 +112,9 @@ export async function getPaymentGateways() {
     const gateways = PAYMENT_GATEWAYS.filter((gateway) => payload?.merchants?.includes(gateway));
     const airpay = response.ok && gateways.length > 0 ? gateways : [1];
 
-    return response.ok && payload?.sabpaisa === true ? [...airpay, SABPAISA_GATEWAY] : airpay;
+    const withSabpaisa = response.ok && payload?.sabpaisa === true ? [...airpay, SABPAISA_GATEWAY] : airpay;
+
+    return response.ok && payload?.frontiva_payin === true ? [...withSabpaisa, FRONTIVA_PAYIN_GATEWAY] : withSabpaisa;
   } catch (error) {
     return [1];
   }
@@ -280,6 +285,72 @@ export function redirectToSabpaisa(payment) {
 }
 
 /**
+ * Starts a Frontiva PayIn payment. Same cart shape as the other gateways, plus
+ * the customer's email (PayIn requires it) and an attempt id that stays the
+ * same if this one attempt is sent twice, so the server can refuse a duplicate.
+ *
+ * @param {Object} params
+ * @param {{fullName: string, phone: string, address: string, landmark: string}} params.customer
+ * @param {string} params.email
+ * @param {Array} params.cartItems
+ * @param {string} params.attemptId
+ * @returns {Promise<{order_ref: string, launch: {type: 'upi_intent', url: string}}>}
+ */
+export async function createFrontivaPayinPayment({ customer, email, cartItems, attemptId }) {
+  if (!cartItems || cartItems.length === 0) {
+    throw new Error('Cannot place an order with an empty cart.');
+  }
+
+  const items = cartItems.map((item) => ({
+    product_id: item.product.id,
+    size: item.product.sizes?.length > 0 ? item.variant.title : null,
+    quantity: item.quantity,
+  }));
+
+  const response = await fetch('/api/payments/frontiva-payin/create', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ customer, email, items, attempt_id: attemptId }),
+  });
+
+  const payload = await response.json().catch(() => null);
+
+  if (!response.ok || !payload) {
+    const error = new Error(payload?.error || 'We could not start the Frontiva PayIn payment. Please try again.');
+
+    if (Array.isArray(payload?.invalid_items)) {
+      error.invalidItems = payload.invalid_items.map((index) => cartItems[index]).filter(Boolean);
+    }
+
+    // The same attempt is already in progress: show its status, do not pay twice.
+    if (payload?.code === 'duplicate_attempt' && payload.order_ref) {
+      error.existingOrderRef = payload.order_ref;
+    }
+
+    throw error;
+  }
+
+  if (!isFrontivaPayinLaunch(payload.launch)) {
+    throw new Error('We could not start the Frontiva PayIn payment. Please choose another payment option.');
+  }
+
+  return payload;
+}
+
+/**
+ * Only the launch form the server validated: a upi://pay intent, shown as a QR.
+ * Provider HTML is never rendered or run here.
+ */
+export function isFrontivaPayinLaunch(launch) {
+  return launch?.type === 'upi_intent' && isUpiPayIntent(launch.url);
+}
+
+/** A upi://pay URI, checked again in the browser before it becomes a QR or a link. */
+export function isUpiPayIntent(value) {
+  return typeof value === 'string' && value.length <= 1024 && /^upi:\/\/pay\?[\x21-\x7e]+$/.test(value);
+}
+
+/**
  * Reads the status of an online order after Airpay returns the customer.
  * The status comes from the server, which verifies it with Airpay directly —
  * never from the redirect's query string.
@@ -287,15 +358,18 @@ export function redirectToSabpaisa(payment) {
  * @param {string} orderRef
  * @returns {Promise<Object>} The order, shaped like createCodOrder's result
  */
-export async function getOnlineOrder(orderRef) {
-  const response = await fetch(`/api/payments/status?ref=${encodeURIComponent(orderRef)}`);
+export async function getOnlineOrder(orderRef, attemptKey = null) {
+  // `k` (Frontiva PayIn only) proves this browser started the checkout; without it no QR is returned.
+  const key = attemptKey ? `&k=${encodeURIComponent(attemptKey)}` : '';
+  const response = await fetch(`/api/payments/status?ref=${encodeURIComponent(orderRef)}${key}`);
   const payload = await response.json().catch(() => null);
 
   if (!response.ok) {
     throw new Error(payload?.error || 'We could not load your order.');
   }
 
-  return payload.order;
+  // Frontiva PayIn only, while still payable: the same QR, restored by the server.
+  return isUpiPayIntent(payload.payment_intent) ? { ...payload.order, payment_intent: payload.payment_intent } : payload.order;
 }
 
 function saveOrder(order) {

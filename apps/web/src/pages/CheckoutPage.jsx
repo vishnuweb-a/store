@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Helmet } from 'react-helmet';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { Banknote, CheckCircle2, CreditCard, Loader2, MapPin, Phone, User } from 'lucide-react';
+import { Banknote, CheckCircle2, CreditCard, Loader2, Mail, MapPin, Phone, User } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
@@ -10,8 +10,10 @@ import { useCart } from '@/hooks/useCart';
 import { useToast } from '@/hooks/use-toast';
 import { formatCurrency, getCartItemSize } from '@/api/EcommerceApi';
 import {
+  FRONTIVA_PAYIN_GATEWAY,
   SABPAISA_GATEWAY,
   createCodOrder,
+  createFrontivaPayinPayment,
   createOnlinePayment,
   createSabpaisaPayment,
   getPaymentGateways,
@@ -43,6 +45,7 @@ const PAYMENT_GATEWAYS = [
   { id: 2, label: 'Pay with Airpay 2' },
   { id: 3, label: 'Pay with Airpay 3' },
   { id: SABPAISA_GATEWAY, label: 'Pay with SabPaisa' },
+  { id: FRONTIVA_PAYIN_GATEWAY, label: 'Pay with Frontiva PayIn' },
 ];
 
 const CheckoutPage = () => {
@@ -56,6 +59,10 @@ const CheckoutPage = () => {
   const [rejectedItems, setRejectedItems] = useState([]);
   const [errors, setErrors] = useState({});
   const orderPlacedRef = useRef(false);
+  // Frontiva PayIn only: its own state so no other gateway's request changes.
+  const [payinEmail, setPayinEmail] = useState('');
+  // One id per PayIn checkout attempt; a fresh one only after a failed attempt.
+  const payinAttemptRef = useRef(null);
   const { cartItems, clearCart, removeFromCart } = useCart();
   const { toast } = useToast();
   const navigate = useNavigate();
@@ -109,6 +116,7 @@ const CheckoutPage = () => {
   const staleItems = rejectedItems.length > 0 ? rejectedItems : unpriceableItems;
 
   const isOnline = paymentMethod === 'online';
+  const isFrontivaPayin = isOnline && gateway === FRONTIVA_PAYIN_GATEWAY;
   const gatewayOptions = PAYMENT_GATEWAYS.filter((option) => availableGateways.includes(option.id));
   const selectedMethod = PAYMENT_METHODS.find((method) => method.id === paymentMethod) ?? PAYMENT_METHODS[0];
 
@@ -147,6 +155,14 @@ const CheckoutPage = () => {
       }
     }
 
+    if (paymentMethod === 'online' && gateway === FRONTIVA_PAYIN_GATEWAY) {
+      if (!payinEmail.trim()) {
+        nextErrors.email = 'Email is required for Frontiva PayIn.';
+      } else if (!/^[^\s@<>"']+@[^\s@<>"']+\.[A-Za-z]{2,}$/.test(payinEmail.trim())) {
+        nextErrors.email = 'Enter a valid email address.';
+      }
+    }
+
     return nextErrors;
   };
 
@@ -177,6 +193,47 @@ const CheckoutPage = () => {
     }
 
     setIsProcessing(true);
+
+    if (paymentMethod === 'online' && gateway === FRONTIVA_PAYIN_GATEWAY) {
+      payinAttemptRef.current = payinAttemptRef.current || crypto.randomUUID();
+
+      try {
+        const payment = await createFrontivaPayinPayment({
+          customer: customerInfo,
+          email: payinEmail.trim(),
+          cartItems,
+          attemptId: payinAttemptRef.current,
+        });
+
+        // The status page shows the QR and polls the server. The intent rides
+        // in history state as a fallback; after a refresh the server restores
+        // it, so no second PayIn is ever created. The cart stays until the
+        // server has verified the payment.
+        navigate(`/success?ref=${encodeURIComponent(payment.order_ref)}&k=${encodeURIComponent(payinAttemptRef.current)}`, {
+          state: { payinIntent: payment.launch.url },
+        });
+      } catch (error) {
+        if (error.existingOrderRef) {
+          navigate(`/success?ref=${encodeURIComponent(error.existingOrderRef)}&k=${encodeURIComponent(payinAttemptRef.current)}`);
+          return;
+        }
+
+        payinAttemptRef.current = null;
+
+        if (error.invalidItems?.length > 0) {
+          setRejectedItems(error.invalidItems);
+        }
+
+        toast({
+          title: 'Could not start Frontiva PayIn payment',
+          description: error.message || 'Please try again, or choose another payment option.',
+          variant: 'destructive',
+        });
+        setIsProcessing(false);
+      }
+
+      return;
+    }
 
     if (paymentMethod === 'online' && gateway === SABPAISA_GATEWAY) {
       try {
@@ -328,6 +385,29 @@ const CheckoutPage = () => {
                         />
                         {fieldError('phone')}
                       </div>
+                      {isFrontivaPayin && (
+                        <div>
+                          <label htmlFor="email" className="block text-sm font-medium mb-2 text-card-foreground">
+                            <Mail className="inline h-4 w-4 mr-1 text-muted-foreground" aria-hidden="true" />
+                            Email <span className="text-destructive">*</span>
+                          </label>
+                          <Input
+                            id="email"
+                            name="email"
+                            type="email"
+                            autoComplete="email"
+                            placeholder="you@example.com"
+                            value={payinEmail}
+                            onChange={(e) => {
+                              setPayinEmail(e.target.value);
+                              setErrors(({ email: _removed, ...rest }) => rest);
+                            }}
+                            aria-invalid={Boolean(errors.email)}
+                            className="text-foreground h-11"
+                          />
+                          {fieldError('email')}
+                        </div>
+                      )}
                       <div>
                         <label htmlFor="address" className="block text-sm font-medium mb-2 text-card-foreground">
                           <MapPin className="inline h-4 w-4 mr-1 text-muted-foreground" aria-hidden="true" />

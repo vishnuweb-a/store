@@ -119,7 +119,7 @@ alter table public.orders add column if not exists payment_gateway text;
 alter table public.orders drop constraint if exists orders_payment_gateway_check;
 alter table public.orders
   add constraint orders_payment_gateway_check
-  check (payment_gateway is null or payment_gateway in ('airpay', 'sabpaisa'));
+  check (payment_gateway is null or payment_gateway in ('airpay', 'sabpaisa', 'frontiva_payin'));
 
 alter table public.orders add column if not exists gateway_payment_id text;
 alter table public.orders add column if not exists gateway_txn_id text;
@@ -134,6 +134,41 @@ alter table public.orders
 create index if not exists orders_sabpaisa_open_idx
   on public.orders (last_checked_at nulls first)
   where payment_gateway = 'sabpaisa';
+
+-- Frontiva PayIn provider metadata. Standalone copy, with the full reasoning:
+-- migrations-frontiva-payin.sql.
+create table if not exists public.frontiva_payin_transactions (
+  id bigint generated always as identity primary key,
+  order_ref text not null,
+  checkout_attempt_id uuid not null,
+  portal_request_id text,
+  portal_merchant_id text,
+  create_state text not null default 'requested',
+  provider_status text,
+  amount_in_paise bigint not null check (amount_in_paise > 0),
+  payment_mode text not null,
+  provider_utr text,
+  last_error text,
+  last_verified_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create unique index if not exists frontiva_payin_transactions_attempt_key
+  on public.frontiva_payin_transactions (checkout_attempt_id);
+create unique index if not exists frontiva_payin_transactions_order_ref_key
+  on public.frontiva_payin_transactions (order_ref);
+create unique index if not exists frontiva_payin_transactions_portal_request_key
+  on public.frontiva_payin_transactions (portal_request_id)
+  where portal_request_id is not null;
+
+alter table public.frontiva_payin_transactions add column if not exists upi_intent text;
+
+alter table public.frontiva_payin_transactions enable row level security;
+
+create index if not exists orders_frontiva_payin_open_idx
+  on public.orders (last_checked_at nulls first)
+  where payment_gateway = 'frontiva_payin';
 
 -- Unique rather than a primary key so Cash on Delivery rows, which have no
 -- order_ref, are unaffected: Postgres allows unlimited nulls in a unique index.

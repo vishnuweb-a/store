@@ -28,6 +28,11 @@ const SENSITIVE_KEYS = new Set([
   'clientsecret',
   'checkouturl',
   'redirect_url',
+  // Frontiva PayIn login material and request signing.
+  'accesstoken',
+  'refreshtoken',
+  'x-signature',
+  'signature',
   // Instrument details.
   'card',
   'cardnumber',
@@ -161,6 +166,7 @@ export function scrubSecrets(text, limit = 300) {
     process.env.SABPAISA_SECRET_KEY,
     process.env.SUBPAISA_API_KEY,
     process.env.SUBPAISA_SECRET_KEY,
+    process.env.FRONTIVA_PAYIN_PASSWORD,
     process.env.SUPABASE_SERVICE_ROLE,
     process.env.CRON_SECRET,
   ].filter((value) => value && String(value).length >= 4);

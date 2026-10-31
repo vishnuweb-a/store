@@ -64,7 +64,7 @@ describe('order items', () => {
     // page and in the admin order list.
     const assignments = ordersApi.match(/size: [^,\n]+/g) || [];
 
-    assert.equal(assignments.length, 3, 'expected the COD, Airpay and SabPaisa paths');
+    assert.equal(assignments.length, 4, 'expected the COD, Airpay, SabPaisa and Frontiva PayIn paths');
 
     for (const assignment of assignments) {
       assert.match(assignment, /item\.product\.sizes\?\.length > 0/);

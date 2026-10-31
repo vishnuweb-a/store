@@ -1,0 +1,89 @@
+{
+  "info": {
+    "name": "Frontiva PayIn - login + GET status (read-only)",
+    "description": "Read-only. Logs in, then asks the status endpoint about ONE provider-approved merchantReference. Contains NO create (POST) request, so it cannot start a payment. Credentials come from the Postman environment (secret-type variables); nothing is hardcoded.\n\nEnvironment variables to set: baseUrl (https://portal.frontiva.online), email, password (secret), expectedMerchantId (1), merchantReference (the approved reference - leave empty otherwise).",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "1. Login",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const body = pm.response.json();",
+              "const d = body.data || {};",
+              "pm.test('200', () => pm.response.to.have.status(200));",
+              "pm.test('accessToken present', () => pm.expect(d.accessToken).to.be.a('string').and.not.empty);",
+              "pm.test('clientSecret present', () => pm.expect(d.user.clientSecret).to.be.a('string').and.not.empty);",
+              "pm.test('merchantId matches expected', () => pm.expect(String(d.user.merchantId)).to.eql(pm.environment.get('expectedMerchantId')));",
+              "pm.test('defaultCurrency INR', () => pm.expect(d.user.defaultCurrency).to.eql('INR'));",
+              "// Session values live only in this environment, as the app keeps them only in memory. refreshToken is deliberately NOT saved (unused).",
+              "pm.environment.set('accessToken', d.accessToken);",
+              "pm.environment.set('clientSecret', d.user.clientSecret);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": { "mode": "raw", "raw": "{\"email\":\"{{email}}\",\"password\":\"{{password}}\"}" },
+        "url": { "raw": "{{baseUrl}}/api/auth/user/login", "host": ["{{baseUrl}}"], "path": ["api", "auth", "user", "login"] }
+      }
+    },
+    {
+      "name": "2. GET status (approved reference only)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const ref = pm.environment.get('merchantReference');",
+              "if (!ref) { throw new Error('Set merchantReference to the provider-approved reference first.'); }",
+              "// Same rule as the app: HMAC-SHA256(clientSecret, exact merchantReference), lowercase hex.",
+              "pm.variables.set('signature', CryptoJS.HmacSHA256(ref, pm.environment.get('clientSecret')).toString(CryptoJS.enc.Hex));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('not 401/403 (signature + token accepted)', () => pm.expect(pm.response.code).to.not.be.oneOf([401, 403]));",
+              "if (pm.response.code === 200) {",
+              "  const body = pm.response.json();",
+              "  let r = body.data !== undefined ? body.data : body;",
+              "  const isArray = Array.isArray(r);",
+              "  console.log('data is array:', isArray, '| keys:', Object.keys(isArray ? (r[0] || {}) : r).join(','));",
+              "  if (isArray) { r = r.filter(x => x.merchantReference === pm.environment.get('merchantReference'))[0] || {}; }",
+              "  pm.test('names our merchantReference', () => pm.expect(r.merchantReference).to.eql(pm.environment.get('merchantReference')));",
+              "  pm.test('merchantId matches (when present)', () => { if (r.merchantId != null) pm.expect(String(r.merchantId)).to.eql(pm.environment.get('expectedMerchantId')); });",
+              "  pm.test('status is a known value', () => pm.expect(String(r.status).toUpperCase()).to.be.oneOf(['PENDING','PROCESSING','COMPLETED','FAILED']));",
+              "  pm.test('requestedAmount or amount readable', () => pm.expect(r.requestedAmount != null || r.amount != null).to.be.true);",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{accessToken}}" },
+          { "key": "x-signature", "value": "{{signature}}" },
+          { "key": "Accept", "value": "application/json" }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/payin-requests?merchantReference={{merchantReference}}",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "payin-requests"],
+          "query": [{ "key": "merchantReference", "value": "{{merchantReference}}" }]
+        }
+      }
+    }
+  ]
+}
