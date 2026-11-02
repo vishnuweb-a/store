@@ -42,7 +42,8 @@ const PAYMENT_METHODS = [
 /** The online payment gateways, by the number the server knows them as. */
 const PAYMENT_GATEWAYS = [
   { id: 1, label: 'Pay with Airpay 1' },
-  { id: 2, label: 'Pay with Airpay 2' },
+  // TEMPORARILY DISABLED: AIRPAY MID_2 — do not delete; see OrdersApi.js PAYMENT_GATEWAYS.
+  // { id: 2, label: 'Pay with Airpay 2' },
   { id: 3, label: 'Pay with Airpay 3' },
   { id: SABPAISA_GATEWAY, label: 'Pay with SabPaisa' },
   { id: FRONTIVA_PAYIN_GATEWAY, label: 'Pay with Frontiva PayIn' },

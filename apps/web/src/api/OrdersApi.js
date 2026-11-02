@@ -86,7 +86,15 @@ export async function createCodOrder({ customer, cartItems }) {
 }
 
 /** The online payment gateways a customer can be offered, by number. */
-export const PAYMENT_GATEWAYS = [1, 2, 3];
+// ====================================================
+// TEMPORARILY DISABLED: AIRPAY MID_2
+// Reason: Gateway temporarily removed from active use.
+// IMPORTANT: Do not delete the implementation.
+// Reactivation requires enabling the backend (the MID 2 flag in
+// api/_lib/config.js) and the UI (restore 2 here and in CheckoutPage.jsx).
+// ====================================================
+// export const PAYMENT_GATEWAYS = [1, 2, 3];
+export const PAYMENT_GATEWAYS = [1, 3];
 
 /** The id the SabPaisa option is known by in the gateway list. */
 export const SABPAISA_GATEWAY = 'sabpaisa';
@@ -110,7 +118,9 @@ export async function getPaymentGateways() {
     const response = await fetch('/api/payments/options');
     const payload = await response.json();
     const gateways = PAYMENT_GATEWAYS.filter((gateway) => payload?.merchants?.includes(gateway));
-    const airpay = response.ok && gateways.length > 0 ? gateways : [1];
+    // A successful answer is final, even if empty: never re-offer a merchant the
+    // server did not list. Gateway 1 is assumed only when the answer is unreadable.
+    const airpay = response.ok ? gateways : [1];
 
     const withSabpaisa = response.ok && payload?.sabpaisa === true ? [...airpay, SABPAISA_GATEWAY] : airpay;
 

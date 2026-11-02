@@ -63,6 +63,9 @@ export default async function handler(req, res) {
 
     merchant = selectMerchant(body);
 
+    // TEMPORARILY DISABLED: AIRPAY MID_2 — checkoutMerchants() excludes merchant 2
+    // (AIRPAY_MID_2.enabled = false in _lib/config.js), so it is refused here
+    // before any OAuth call, order write or redirect.
     if (!checkoutMerchants().includes(merchant)) {
       // Switched off, or not configured. The customer is told to pick another
       // option; the payment is never quietly moved to another account.

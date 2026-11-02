@@ -176,6 +176,20 @@ export function configuredMerchants() {
   return configs;
 }
 
+// ====================================================
+// TEMPORARILY DISABLED: AIRPAY MID_2
+// Reason: Gateway temporarily removed from active use.
+// IMPORTANT: Do not delete the implementation.
+// Reactivation requires enabling the backend (this flag) and the UI
+// (PAYMENT_GATEWAYS in apps/web/src/api/OrdersApi.js and pages/CheckoutPage.jsx).
+// Hard-coded, not an env var, so a missing variable can never switch it back
+// on. An object only so the test suite can exercise the preserved MID_2 code
+// paths; nothing in production writes to it. It gates NEW payments only:
+// callbacks, /status and /reconcile use configuredMerchants(), which still
+// includes merchant 2.
+// ====================================================
+export const AIRPAY_MID_2 = { enabled: false };
+
 /**
  * Merchants a NEW payment may be started on: AIRPAY_ENABLED_MERCHANTS (default
  * all) narrowed to those actually configured. This is the checkout switch —
@@ -194,7 +208,11 @@ export function checkoutMerchants() {
   // not be able to switch off the merchant that is live today.
   const enabled = listed.length > 0 ? listed : MERCHANTS;
 
-  return MERCHANTS.filter((merchant) => enabled.includes(merchant) && isMerchantConfigured(merchant));
+  return MERCHANTS.filter(
+    (merchant) =>
+      // TEMPORARILY DISABLED: AIRPAY MID_2 — see AIRPAY_MID_2 above.
+      (merchant !== 2 || AIRPAY_MID_2.enabled) && enabled.includes(merchant) && isMerchantConfigured(merchant),
+  );
 }
 
 /**

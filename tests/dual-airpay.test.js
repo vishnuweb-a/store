@@ -18,6 +18,7 @@ import test, { afterEach, beforeEach, describe } from 'node:test';
 import { confirmExternalOrder, confirmOrder, getAccessToken } from '../api/_lib/airpay.js';
 import { extractGatewayOrderId, resolveCallback } from '../api/_lib/callback-payload.js';
 import {
+  AIRPAY_MID_2,
   CALLBACK_PATH,
   CALLBACK_PATH_FRONTIVA,
   callbackPathFor,
@@ -34,6 +35,7 @@ import callbackHandler from '../api/payments/callback.js';
 import createHandler from '../api/payments/create.js';
 import healthHandler from '../api/health.js';
 import optionsHandler from '../api/payments/options.js';
+import reconcileHandler from '../api/payments/reconcile.js';
 import statusHandler from '../api/payments/status.js';
 
 const M1 = {
@@ -108,12 +110,18 @@ beforeEach(() => {
   }
 
   Object.assign(process.env, M1, M2, SHARED);
+
+  // MID_2 is temporarily disabled in production. These suites keep exercising
+  // its preserved implementation so it is known-good on reactivation; the
+  // 'AIRPAY MID_2 temporarily disabled' suite below covers the live state.
+  AIRPAY_MID_2.enabled = true;
 });
 
 afterEach(() => {
   globalThis.fetch = originalFetch;
   process.env = originalEnv;
   console.log = originalLog;
+  AIRPAY_MID_2.enabled = false;
 });
 
 /** Captures structured log events, so behaviour can be asserted from them. */
@@ -242,6 +250,16 @@ function world({ orders = [], transactions = {}, client = { status: 200 }, airpa
         state.orderWrites.push({ method, body });
 
         return text(201, [row]);
+      }
+
+      // The reconcile sweep's listing query: every unresolved online order.
+      if (table === 'orders' && method === 'GET' && searchParams.get('order_ref') === 'not.is.null') {
+        const open = ['initiated', 'processing', 'requires_review'];
+
+        return text(
+          200,
+          state.orders.filter((row) => open.includes(row.payment_status) || row.payment_status == null),
+        );
       }
 
       const ref = (searchParams.get('order_ref') || '').replace(/^eq\./, '');
@@ -2221,5 +2239,144 @@ describe('a third merchant on the shared arp_frontiva callback path', () => {
       assert.ok(!/\b(drop table|drop column|delete from|truncate|update public)\b/.test(statements));
       assert.match(read('../supabase-schema.sql'), /airpay_merchant in \(1, 2, 3\)/);
     });
+  });
+});
+
+/**
+ * The live state: AIRPAY MID_2 is temporarily disabled for NEW payments only.
+ * Its credentials stay configured, and everything that settles an order
+ * already placed on it must keep working.
+ */
+describe('AIRPAY MID_2 temporarily disabled', () => {
+  const read = (relative) => readFileSync(new URL(relative, import.meta.url), 'utf8');
+
+  beforeEach(() => {
+    Object.assign(process.env, M3);
+    AIRPAY_MID_2.enabled = false;
+  });
+
+  test('the shipped flag is off', () => {
+    // Read from source: the in-memory value is toggled by the suites above.
+    const source = read('../api/_lib/config.js');
+    assert.match(source, /export const AIRPAY_MID_2 = \{ enabled: false \};/);
+  });
+
+  test('checkout offers 1 and 3, never 2, even when 2 is listed and configured', () => {
+    assert.equal(isMerchantConfigured(2), true, 'credentials are preserved');
+    assert.deepEqual(checkoutMerchants(), [1, 3]);
+
+    process.env.AIRPAY_ENABLED_MERCHANTS = '1,2,3';
+    assert.deepEqual(checkoutMerchants(), [1, 3]);
+
+    process.env.AIRPAY_ENABLED_MERCHANTS = '2';
+    assert.deepEqual(checkoutMerchants(), [], 'a list naming only 2 offers no Airpay merchant');
+  });
+
+  test('options does not present merchant 2', async () => {
+    const body = (await call(optionsHandler, { method: 'GET', url: '/api/payments/options' })).json();
+    assert.deepEqual(body.merchants, [1, 3]);
+  });
+
+  test('a direct or manipulated merchant 2 request is refused before OAuth, order or redirect', async () => {
+    for (const merchant of [2, '2']) {
+      const state = world();
+      const response = await createPayment({ merchant, mid: MID[2], merchant_id: MID[2] });
+
+      assert.equal(response.statusCode, 503, `accepted ${JSON.stringify(merchant)}`);
+      assert.equal(response.json().code, 'merchant_unavailable');
+      assert.equal(state.oauth.length, 0, 'no token requested from any merchant');
+      assert.equal(state.orders.length, 0, 'no order written');
+      assert.ok(!('action' in response.json()), 'no payment page handed out');
+    }
+  });
+
+  test('merchants 1 and 3 still start payments exactly as before', async () => {
+    for (const merchant of [1, 3]) {
+      const state = world();
+      const response = await createPayment({ merchant });
+
+      assert.equal(response.statusCode, 200);
+      assert.deepEqual(state.oauth.map((entry) => entry.merchant), [merchant]);
+      assert.equal(response.json().fields.merchant_id, MID[merchant]);
+    }
+
+    // An absent selection is still merchant 1.
+    world();
+    assert.equal((await createPayment()).json().fields.merchant_id, MID[1]);
+  });
+
+  test('a callback for an existing merchant 2 order still settles and is forwarded', async () => {
+    for (const body of [(ref) => ipn(2, ref), (ref) => enveloped(2, ref)]) {
+      const row = order({ airpay_merchant: 2 });
+      const state = world({ orders: [row], transactions: { [`2:${row.order_ref}`]: PAID } });
+
+      const response = await postCallback(body(row.order_ref));
+
+      assert.equal(response.statusCode, 200);
+      assert.equal(state.orders[0].payment_status, 'paid');
+      assert.deepEqual(state.confirmations.map((entry) => entry.merchant), [2]);
+      assert.equal(state.forwards.length, 1);
+      assert.equal(state.forwards[0].url, KKCHAT_URL);
+    }
+  });
+
+  test('the status check still verifies an existing merchant 2 order with merchant 2', async () => {
+    const row = order({ airpay_merchant: 2 });
+    const state = world({ orders: [row], transactions: { [`2:${row.order_ref}`]: PAID } });
+
+    const response = await call(statusHandler, { method: 'GET', url: `/api/payments/status?ref=${row.order_ref}` });
+
+    assert.equal(response.json().order.payment_status, 'paid');
+    assert.ok(state.oauth.length > 0 && state.oauth.every((entry) => entry.merchant === 2));
+  });
+
+  test('the reconcile cron still settles existing merchant 2 orders, with merchant 2 only', async () => {
+    process.env.CRON_SECRET = 'cron-secret-for-tests';
+
+    const row = order({ airpay_merchant: 2 });
+    const state = world({ orders: [row], transactions: { [`2:${row.order_ref}`]: PAID } });
+
+    const response = await call(reconcileHandler, {
+      method: 'POST',
+      headers: { authorization: 'Bearer cron-secret-for-tests' },
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.json().checked, 1, 'the merchant 2 order was picked up');
+    assert.equal(response.json().settled, 1);
+    assert.equal(state.orders[0].payment_status, 'paid');
+    assert.ok(state.oauth.length > 0 && state.oauth.every((entry) => entry.merchant === 2));
+    assert.deepEqual(state.confirmations.map((entry) => entry.merchant), [2]);
+  });
+
+  test('health reports merchant 2 as configured but not offered', async () => {
+    world();
+    const body = (await call(healthHandler, { method: 'GET', url: '/api/health' })).json();
+
+    assert.equal(body.merchants['2'].configured, true);
+    assert.equal(body.merchants['2'].offered_at_checkout, false);
+    assert.equal(body.merchants['1'].offered_at_checkout, true);
+    assert.equal(body.merchants['3'].offered_at_checkout, true);
+  });
+
+  test('the browser never falls back to a merchant the server did not list', () => {
+    const ordersApi = read('../apps/web/src/api/OrdersApi.js');
+
+    // A successful answer is used as given, even when empty; [1] only on failure.
+    assert.match(ordersApi, /const airpay = response\.ok \? gateways : \[1\];/);
+    assert.ok(!/gateways\.length > 0/.test(ordersApi), 'an empty server list must not be replaced');
+  });
+
+  test('the browser neither lists nor can submit gateway 2; the code is commented, not deleted', () => {
+    const ordersApi = read('../apps/web/src/api/OrdersApi.js');
+    const checkout = read('../apps/web/src/pages/CheckoutPage.jsx');
+
+    assert.match(ordersApi, /^export const PAYMENT_GATEWAYS = \[1, 3\];$/m);
+    assert.match(ordersApi, /^\/\/ export const PAYMENT_GATEWAYS = \[1, 2, 3\];$/m);
+    assert.match(checkout, /^\s*\/\/ \{ id: 2, label: 'Pay with Airpay 2' \},$/m);
+    assert.ok(!/^\s*\{ id: 2,/m.test(checkout), 'no live gateway 2 entry');
+    // SabPaisa and Frontiva PayIn entries are untouched.
+    assert.match(checkout, /^\s*\{ id: SABPAISA_GATEWAY, label: 'Pay with SabPaisa' \},$/m);
+    assert.match(checkout, /^\s*\{ id: FRONTIVA_PAYIN_GATEWAY, label: 'Pay with Frontiva PayIn' \},$/m);
   });
 });
