@@ -386,29 +386,6 @@ const CheckoutPage = () => {
                         />
                         {fieldError('phone')}
                       </div>
-                      {isFrontivaPayin && (
-                        <div>
-                          <label htmlFor="email" className="block text-sm font-medium mb-2 text-card-foreground">
-                            <Mail className="inline h-4 w-4 mr-1 text-muted-foreground" aria-hidden="true" />
-                            Email <span className="text-destructive">*</span>
-                          </label>
-                          <Input
-                            id="email"
-                            name="email"
-                            type="email"
-                            autoComplete="email"
-                            placeholder="you@example.com"
-                            value={payinEmail}
-                            onChange={(e) => {
-                              setPayinEmail(e.target.value);
-                              setErrors(({ email: _removed, ...rest }) => rest);
-                            }}
-                            aria-invalid={Boolean(errors.email)}
-                            className="text-foreground h-11"
-                          />
-                          {fieldError('email')}
-                        </div>
-                      )}
                       <div>
                         <label htmlFor="address" className="block text-sm font-medium mb-2 text-card-foreground">
                           <MapPin className="inline h-4 w-4 mr-1 text-muted-foreground" aria-hidden="true" />
@@ -540,6 +517,30 @@ const CheckoutPage = () => {
                           })}
                         </div>
                         {fieldError('gateway')}
+                      </div>
+                    )}
+                    {/* Shown beside the gateway picker so it appears where the customer just clicked. */}
+                    {isFrontivaPayin && (
+                      <div className="mt-4">
+                        <label htmlFor="email" className="block text-sm font-medium mb-2 text-card-foreground">
+                          <Mail className="inline h-4 w-4 mr-1 text-muted-foreground" aria-hidden="true" />
+                          Email Address <span className="text-destructive">*</span>
+                        </label>
+                        <Input
+                          id="email"
+                          name="email"
+                          type="email"
+                          autoComplete="email"
+                          placeholder="Enter your email address"
+                          value={payinEmail}
+                          onChange={(e) => {
+                            setPayinEmail(e.target.value);
+                            setErrors(({ email: _removed, ...rest }) => rest);
+                          }}
+                          aria-invalid={Boolean(errors.email)}
+                          className="text-foreground h-11"
+                        />
+                        {fieldError('email')}
                       </div>
                     )}
                   </motion.div>

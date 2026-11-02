@@ -5,7 +5,7 @@ import globals from 'globals';
 import unicodeEscapePlugin from './eslint.unicode-escapes-plugin.mjs';
 
 export default [
-	{ ignores: ['node_modules/**', 'dist/**', 'build/**', 'vite.config.js'] },
+	{ ignores: ['node_modules/**', 'dist/**', 'build/**', 'vite.config.js', 'vitest.config.js'] },
 	{
 		files: ['**/*.js', '**/*.jsx'],
 		plugins: { react, 'react-hooks': reactHooks, 'import': importPlugin },
