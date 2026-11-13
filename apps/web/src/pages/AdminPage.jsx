@@ -14,6 +14,7 @@ const CATEGORY_OPTIONS = [
   { value: '', label: 'Uncategorised' },
   { value: 'mens', label: "Men's Wear" },
   { value: 'womens', label: "Women's Wear" },
+  { value: 'accessories', label: 'Accessories' },
 ];
 
 const EMPTY_PRODUCT = {

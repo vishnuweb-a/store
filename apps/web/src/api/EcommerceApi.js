@@ -35,6 +35,7 @@ export const formatCurrency = (priceInCents, currencyInfo) => {
 const COLLECTIONS = [
   { id: "mens", title: "Men's Wear" },
   { id: "womens", title: "Women's Wear" },
+  { id: "accessories", title: "Accessories" },
 ];
 
 /**

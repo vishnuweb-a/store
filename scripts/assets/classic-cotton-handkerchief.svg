@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="1000" viewBox="0 0 800 1000">
+  <rect width="800" height="1000" fill="#f3efe8"/>
+  <ellipse cx="400" cy="790" rx="260" ry="34" fill="#000" opacity="0.07"/>
+  <!-- folded square handkerchief, slight tilt -->
+  <g transform="rotate(-8 400 500)">
+    <rect x="170" y="270" width="460" height="460" rx="6" fill="#fdfcf9" stroke="#e2ddd3" stroke-width="2"/>
+    <!-- hem stitching -->
+    <rect x="196" y="296" width="408" height="408" rx="3" fill="none" stroke="#b9c3cf" stroke-width="3" stroke-dasharray="10 8"/>
+    <!-- woven stripe border -->
+    <rect x="222" y="322" width="356" height="356" fill="none" stroke="#7f93ab" stroke-width="6"/>
+    <rect x="236" y="336" width="328" height="328" fill="none" stroke="#7f93ab" stroke-width="2"/>
+    <!-- diagonal fold -->
+    <path d="M170 730 L630 270 L630 730 Z" fill="#ece8e0" opacity="0.55"/>
+    <line x1="170" y1="730" x2="630" y2="270" stroke="#dcd6cb" stroke-width="2"/>
+  </g>
+</svg>

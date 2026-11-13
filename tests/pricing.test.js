@@ -4,6 +4,8 @@
 import assert from 'node:assert/strict';
 import test, { describe } from 'node:test';
 import { formatInr, normalizeCustomer, normalizeItems, priceOrder } from '../api/_lib/pricing.js';
+import { validateSabpaisaAmount } from '../api/_lib/sabpaisa.js';
+import { validateFrontivaAmount } from '../api/_lib/frontiva-payin.js';
 
 const SHIRT = {
   id: 1,
@@ -388,5 +390,34 @@ describe('track_quantity and sizes', () => {
 
     assert.equal(items[0].size, null);
     assert.equal(items[0].quantity, 9);
+  });
+});
+
+describe('Classic Cotton Handkerchief (TEST-HANK-199)', () => {
+  // Mirrors the row scripts/add-classic-cotton-handkerchief.js inserts.
+  const HANKY = {
+    id: 999,
+    title: 'Classic Cotton Handkerchief',
+    sku: 'TEST-HANK-199',
+    price: '199.00', // numeric(10,2) arrives as a string over PostgREST
+    discount_price: null,
+    sizes: [],
+    stock: 0,
+    track_quantity: false,
+    active: true,
+    image_url: 'https://res.cloudinary.com/demo/image/upload/hanky.png',
+  };
+
+  test('one unit prices at 19900 paise from the trusted row, whatever the client sends', async () => {
+    const items = normalizeItems([{ product_id: '999', quantity: 1, price_in_cents: 1 }]);
+    const { items: lines, totalInCents } = await priceOrder(items, { load: async () => [HANKY] });
+
+    assert.equal(totalInCents, 19900);
+    assert.equal(lines[0].title, 'Classic Cotton Handkerchief');
+    assert.equal(lines[0].quantity, 1);
+    assert.equal(lines[0].size, null);
+    assert.equal(lines[0].line_total_formatted, '₹199.00');
+    assert.equal(validateSabpaisaAmount(totalInCents), 19900);
+    assert.equal(validateFrontivaAmount(totalInCents), 19900);
   });
 });
