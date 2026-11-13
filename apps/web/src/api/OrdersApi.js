@@ -94,24 +94,54 @@ export async function createCodOrder({ customer, cartItems }) {
 // api/_lib/config.js) and the UI (restore 2 here and in CheckoutPage.jsx).
 // ====================================================
 // export const PAYMENT_GATEWAYS = [1, 2, 3];
-export const PAYMENT_GATEWAYS = [1, 3];
+// ====================================================
+// TEMPORARILY DISABLED: AIRPAY MID_1
+// Reason: Gateway temporarily removed from active use.
+// IMPORTANT: Do not delete the implementation.
+// Reactivation requires enabling the backend (the MID 1 flag in
+// api/_lib/config.js) and the UI (restore 1 here and in CheckoutPage.jsx).
+// ====================================================
+// export const PAYMENT_GATEWAYS = [1, 3];
+export const PAYMENT_GATEWAYS = [3];
+
+/**
+ * Assumed only when /api/payments/options cannot be read. Never a disabled
+ * merchant; the server still refuses it if merchant 3 is off.
+ */
+const FALLBACK_GATEWAYS = [3];
 
 /** The id the SabPaisa option is known by in the gateway list. */
 export const SABPAISA_GATEWAY = 'sabpaisa';
 
-/** The id the Frontiva PayIn option is known by in the gateway list. */
+/** The id the Frontiva PayIn option is known by in the gateway list (PayIn slot 1). */
 export const FRONTIVA_PAYIN_GATEWAY = 'frontiva_payin';
+
+/** Frontiva PayIn slot 2: a second PayIn account, unrelated to Airpay merchant 2. */
+export const FRONTIVA_PAYIN_GATEWAY_2 = 'frontiva_payin_2';
+
+/**
+ * The PayIn slot a gateway id names: 1 for 'frontiva_payin', 2 for
+ * 'frontiva_payin_2', otherwise null (not a PayIn option).
+ *
+ * @param {unknown} id
+ * @returns {1|2|null}
+ */
+export function frontivaSlotFor(id) {
+  if (id === FRONTIVA_PAYIN_GATEWAY) return 1;
+  if (id === FRONTIVA_PAYIN_GATEWAY_2) return 2;
+  return null;
+}
 
 /**
  * Asks the server which online payment gateways are available right now.
  *
- * The answer is the Airpay gateway numbers, followed by 'sabpaisa' when the
- * server offers SabPaisa. If it cannot be read, gateway 1 alone is assumed —
- * the single online option the checkout has always had — so a failure here
- * never takes online payment away. SabPaisa is only ever added on an explicit
- * `sabpaisa: true`.
+ * The answer is the Airpay gateway numbers, followed by 'sabpaisa' and the
+ * Frontiva PayIn ids when the server offers them. If it cannot be read,
+ * FALLBACK_GATEWAYS (Airpay 3; Airpay 1 and 2 are temporarily disabled) is
+ * assumed so a failure here never takes online payment away. Every other
+ * option is only ever added on the server's explicit word.
  *
- * @returns {Promise<Array<number|'sabpaisa'>>}
+ * @returns {Promise<Array<number|'sabpaisa'|'frontiva_payin'|'frontiva_payin_2'>>}
  */
 export async function getPaymentGateways() {
   try {
@@ -119,14 +149,20 @@ export async function getPaymentGateways() {
     const payload = await response.json();
     const gateways = PAYMENT_GATEWAYS.filter((gateway) => payload?.merchants?.includes(gateway));
     // A successful answer is final, even if empty: never re-offer a merchant the
-    // server did not list. Gateway 1 is assumed only when the answer is unreadable.
-    const airpay = response.ok ? gateways : [1];
+    // server did not list. The fallback is assumed only when the answer is unreadable.
+    const airpay = response.ok ? gateways : FALLBACK_GATEWAYS;
 
     const withSabpaisa = response.ok && payload?.sabpaisa === true ? [...airpay, SABPAISA_GATEWAY] : airpay;
 
-    return response.ok && payload?.frontiva_payin === true ? [...withSabpaisa, FRONTIVA_PAYIN_GATEWAY] : withSabpaisa;
+    const withPayin =
+      response.ok && payload?.frontiva_payin === true ? [...withSabpaisa, FRONTIVA_PAYIN_GATEWAY] : withSabpaisa;
+
+    // PayIn slot 2 only on the server's explicit word.
+    return response.ok && Array.isArray(payload?.frontiva_payin_merchants) && payload.frontiva_payin_merchants.includes(2)
+      ? [...withPayin, FRONTIVA_PAYIN_GATEWAY_2]
+      : withPayin;
   } catch (error) {
-    return [1];
+    return FALLBACK_GATEWAYS;
   }
 }
 
@@ -304,9 +340,10 @@ export function redirectToSabpaisa(payment) {
  * @param {string} params.email
  * @param {Array} params.cartItems
  * @param {string} params.attemptId
+ * @param {1|2} [params.slot] - PayIn account; sent only when not 1, so slot 1's request is unchanged
  * @returns {Promise<{order_ref: string, launch: {type: 'upi_intent', url: string}}>}
  */
-export async function createFrontivaPayinPayment({ customer, email, cartItems, attemptId }) {
+export async function createFrontivaPayinPayment({ customer, email, cartItems, attemptId, slot = 1 }) {
   if (!cartItems || cartItems.length === 0) {
     throw new Error('Cannot place an order with an empty cart.');
   }
@@ -320,7 +357,7 @@ export async function createFrontivaPayinPayment({ customer, email, cartItems, a
   const response = await fetch('/api/payments/frontiva-payin/create', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ customer, email, items, attempt_id: attemptId }),
+    body: JSON.stringify({ customer, email, items, attempt_id: attemptId, ...(slot !== 1 ? { merchant: slot } : {}) }),
   });
 
   const payload = await response.json().catch(() => null);
@@ -379,7 +416,9 @@ export async function getOnlineOrder(orderRef, attemptKey = null) {
   }
 
   // Frontiva PayIn only, while still payable: the same QR, restored by the server.
-  return isUpiPayIntent(payload.payment_intent) ? { ...payload.order, payment_intent: payload.payment_intent } : payload.order;
+  const order = typeof payload.payee_name === 'string' ? { ...payload.order, payee_name: payload.payee_name } : payload.order;
+
+  return isUpiPayIntent(payload.payment_intent) ? { ...order, payment_intent: payload.payment_intent } : order;
 }
 
 function saveOrder(order) {

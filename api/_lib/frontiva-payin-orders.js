@@ -10,7 +10,9 @@ import {
   FRONTIVA_PAYIN_GATEWAY,
   decideFrontivaSettlement,
   fetchFrontivaPayinStatus,
+  loadFrontivaPayinConfig,
   logFrontivaPayin,
+  parseFrontivaMerchant,
 } from './frontiva-payin.js';
 import { logEvent } from './http.js';
 import { ONLINE_PAYMENT_METHOD, OPEN_STATUSES, findOrderByRef } from './orders.js';
@@ -159,6 +161,29 @@ export async function confirmFrontivaPayin(orderRef, deps = {}) {
   return settleFrontivaPayinOrder(order, deps);
 }
 
+/**
+ * The PayIn merchant slot an order was placed on, read from the server-written
+ * frontiva_payin_merchant column. NULL (every order placed before slot 2
+ * existed, and every slot-1 order since) is slot 1. A present but unknown value
+ * is null and is never guessed at: the caller refuses to settle.
+ *
+ * @returns {1|2|null}
+ */
+export function frontivaSlotForOrder(order) {
+  const stored = order?.frontiva_payin_merchant;
+  return stored === null || stored === undefined ? 1 : parseFrontivaMerchant(stored);
+}
+
+/** The portal merchant the PayIn was created under, as recorded at creation (best effort). */
+async function recordedPortalMerchant(orderRef, doSelect) {
+  try {
+    const [row] = await doSelect(TRANSACTIONS_TABLE, `select=portal_merchant_id&order_ref=eq.${encodeURIComponent(orderRef)}&limit=1`);
+    return row?.portal_merchant_id == null ? null : String(row.portal_merchant_id);
+  } catch {
+    return null;
+  }
+}
+
 /** settleOrder()'s branch for payment_gateway = 'frontiva_payin'. The order is already loaded. */
 export async function settleFrontivaPayinOrder(order, deps = {}) {
   const orderRef = order.order_ref;
@@ -173,17 +198,45 @@ export async function settleFrontivaPayinOrder(order, deps = {}) {
     return { order, status: current, changed: false };
   }
 
-  if (count >= FRONTIVA_AUTO_CHECK_BUDGET) {
-    if (current === 'requires_review') {
-      return { order, status: current, changed: false, reason: 'check budget exhausted' };
-    }
+  const slot = frontivaSlotForOrder(order);
 
-    return transition(orderRef, { payment_status: 'requires_review', status: 'requires_review', updated_at: new Date(now).toISOString() }, {
-      applyUpdate,
-      findOrder,
-      current,
-      reason: 'check budget exhausted',
-    });
+  if (!slot) {
+    // Asking any account but the one the order was placed on proves nothing.
+    logEvent('payment.settle.frontiva_unknown_merchant', { order_ref: orderRef });
+    return { order, status: current, changed: false, reason: 'unknown frontiva merchant' };
+  }
+
+  // Only this slot's credentials. A missing slot-2 config is never replaced by
+  // slot 1's: the check below then reports not_configured → requires_review.
+  let config = null;
+
+  try {
+    config = deps.frontivaConfig && (deps.frontivaConfig.slot ?? 1) === slot ? deps.frontivaConfig : loadFrontivaPayinConfig(slot);
+  } catch {
+    // Reported as not_configured below, without calling the provider.
+  }
+
+  const park = (reason) =>
+    current === 'requires_review'
+      ? { order, status: current, changed: false, reason }
+      : transition(orderRef, { payment_status: 'requires_review', status: 'requires_review', updated_at: new Date(now).toISOString() }, {
+          applyUpdate,
+          findOrder,
+          current,
+          reason,
+        });
+
+  if (count >= FRONTIVA_AUTO_CHECK_BUDGET) {
+    return park('check budget exhausted');
+  }
+
+  // Created under one portal merchant, now configured to expect another: the
+  // answer of the new account could not prove this payment either way.
+  const createdUnder = config ? await recordedPortalMerchant(orderRef, deps.select || select) : null;
+
+  if (createdUnder !== null && createdUnder !== config.expectedMerchantId) {
+    logEvent('payment.settle.frontiva_merchant_changed', { order_ref: orderRef, merchant: slot });
+    return park('portal merchant differs from the one the payin was created under');
   }
 
   // Claim the right to make one check: concurrent page loads and reconciliation
@@ -202,7 +255,7 @@ export async function settleFrontivaPayinOrder(order, deps = {}) {
   }
 
   const expectedInPaise = Math.round(Number(order.total) * 100);
-  const answer = await fetchStatus(orderRef, deps.frontivaConfig ? { config: deps.frontivaConfig } : {});
+  const answer = config ? await fetchStatus(orderRef, { config }) : { outcome: 'not_configured', reason: 'not configured' };
   const decision = decideFrontivaSettlement(answer, {
     orderRef,
     expectedInPaise,
@@ -230,6 +283,7 @@ export async function settleFrontivaPayinOrder(order, deps = {}) {
   if (decision.status !== 'paid') {
     logFrontivaPayin('payment.settle.frontiva_payin_not_paid', {
       order_ref: orderRef,
+      merchant: slot,
       decided: decision.status,
       reason: decision.reason,
       outcome: answer.outcome,

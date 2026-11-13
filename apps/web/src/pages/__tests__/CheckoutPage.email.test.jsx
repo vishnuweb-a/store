@@ -52,7 +52,7 @@ async function openOnline() {
     </MemoryRouter>,
   );
   await user.click(screen.getByRole('radio', { name: /Pay Online/ }));
-  await screen.findByRole('radio', { name: /Frontiva PayIn/ });
+  await screen.findAllByRole('radio', { name: /Frontiva PayIn/ });
   return user;
 }
 
@@ -67,9 +67,9 @@ async function fillDelivery(user) {
 }
 
 describe('Frontiva PayIn email field', () => {
-  test('Airpay 2 stays hidden even if the server still lists it', async () => {
+  test('Airpay 1 and 2 stay hidden even if the server still lists them', async () => {
     await openOnline();
-    expect(screen.getByRole('radio', { name: /Airpay 1/ })).toBeTruthy();
+    expect(screen.queryByRole('radio', { name: /Airpay 1/ })).toBeNull();
     expect(screen.getByRole('radio', { name: /Airpay 3/ })).toBeTruthy();
     expect(screen.queryByRole('radio', { name: /Airpay 2/ })).toBeNull();
   });
@@ -85,7 +85,7 @@ describe('Frontiva PayIn email field', () => {
     expect(picker.nextElementSibling.contains(field)).toBe(true);
   });
 
-  test.each([[/Airpay 1/], [/Airpay 3/], [/SabPaisa/]])('is removed when switching to %s', async (name) => {
+  test.each([[/Airpay 3/], [/SabPaisa/]])('is removed when switching to %s', async (name) => {
     const user = await openOnline();
     await pickGateway(user, /Frontiva PayIn/);
     expect(emailField()).toBeTruthy();
@@ -151,5 +151,75 @@ describe('Frontiva PayIn email field', () => {
     expect(body.attempt_id).toBe(ATTEMPT);
     expect(body.customer.fullName).toBe('Asha Menon');
     expect(body.items).toEqual([{ product_id: '12', size: 'M', quantity: 1 }]);
+  });
+});
+
+describe('Frontiva PayIn 2 (second PayIn account)', () => {
+  const PAYIN_1 = 'Pay with Frontiva PayIn';
+  const PAYIN_2 = 'Pay with Frontiva PayIn 2';
+
+  const offer = (options) =>
+    fetchMock.mockImplementation(async (url) =>
+      url === '/api/payments/options' ? Response.json(options) : Response.json({ error: 'mocked failure' }, { status: 500 }),
+    );
+
+  const sentTo = (path) => JSON.parse(fetchMock.mock.calls.find(([u]) => u === path)[1].body);
+
+  test('is not shown unless the server lists PayIn slot 2', async () => {
+    await openOnline();
+    expect(screen.getByRole('radio', { name: PAYIN_1 })).toBeTruthy();
+    expect(screen.queryByRole('radio', { name: PAYIN_2 })).toBeNull();
+  });
+
+  test('a server listing Airpay merchant 2 does not turn on PayIn 2 (separate namespaces)', async () => {
+    offer({ merchants: [1, 2, 3], sabpaisa: false, frontiva_payin: true });
+    await openOnline();
+    expect(screen.queryByRole('radio', { name: PAYIN_2 })).toBeNull();
+  });
+
+  test('shown when listed; uses the same email field and sends merchant: 2', async () => {
+    offer({ merchants: [3], sabpaisa: false, frontiva_payin: true, frontiva_payin_merchants: [1, 2] });
+    const user = await openOnline();
+    await fillDelivery(user);
+
+    await pickGateway(user, PAYIN_2);
+    expect(emailField()).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: SUBMIT }));
+    expect(await screen.findByText('Email is required for Frontiva PayIn.')).toBeTruthy();
+    expect(calledWith('frontiva-payin')).toBe(false);
+
+    await user.type(emailField(), 'asha@example.com');
+    await user.click(screen.getByRole('button', { name: SUBMIT }));
+    await waitFor(() => expect(calledWith('/api/payments/frontiva-payin/create')).toBe(true));
+    expect(sentTo('/api/payments/frontiva-payin/create').merchant).toBe(2);
+    expect(calledWith('/api/payments/create')).toBe(false);
+  });
+
+  test('slot 2 can be offered while slot 1 is off', async () => {
+    offer({ merchants: [3], sabpaisa: false, frontiva_payin_merchants: [2] });
+    await openOnline();
+    expect(await screen.findByRole('radio', { name: PAYIN_2 })).toBeTruthy();
+    expect(screen.queryByRole('radio', { name: PAYIN_1 })).toBeNull();
+  });
+
+  test('slot 1 still sends exactly its original body, with no merchant key', async () => {
+    offer({ merchants: [3], sabpaisa: false, frontiva_payin: true, frontiva_payin_merchants: [1, 2] });
+    const user = await openOnline();
+    await fillDelivery(user);
+    await pickGateway(user, PAYIN_1);
+    await user.type(emailField(), 'asha@example.com');
+    await user.click(screen.getByRole('button', { name: SUBMIT }));
+
+    await waitFor(() => expect(calledWith('/api/payments/frontiva-payin/create')).toBe(true));
+    expect(Object.keys(sentTo('/api/payments/frontiva-payin/create')).sort()).toEqual(['attempt_id', 'customer', 'email', 'items']);
+  });
+
+  test('the email field stays when switching between the two PayIn accounts', async () => {
+    offer({ merchants: [3], sabpaisa: false, frontiva_payin: true, frontiva_payin_merchants: [1, 2] });
+    const user = await openOnline();
+    await pickGateway(user, PAYIN_1);
+    await user.type(emailField(), 'asha@example.com');
+    await pickGateway(user, PAYIN_2);
+    expect(emailField().value).toBe('asha@example.com');
   });
 });

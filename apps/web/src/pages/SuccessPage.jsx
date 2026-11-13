@@ -319,8 +319,8 @@ const SuccessPage = () => {
                 </div>
 
                 <p className="text-sm text-muted-foreground mb-6">
-                  Check that your UPI app shows <span className="font-semibold text-card-foreground">{order.total_formatted}</span> to
-                  Frontiva Trading Private Limited before you pay.
+                  Check that your UPI app shows <span className="font-semibold text-card-foreground">{order.total_formatted}</span>
+                  {onlineOrder?.payee_name ? ` to ${onlineOrder.payee_name}` : ''} before you pay.
                 </p>
 
                 {isMobile && (

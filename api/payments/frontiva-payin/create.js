@@ -15,12 +15,14 @@ import { ConfigError } from '../../_lib/config.js';
 import { newOrderRef } from '../../_lib/crypto.js';
 import {
   FRONTIVA_PAYIN_GATEWAY,
+  FRONTIVA_PAYIN_MERCHANTS,
   FRONTIVA_PAYIN_PAYMENT_MODE,
   createFrontivaPayin,
   fetchFrontivaPayinStatus,
   frontivaPayinAvailable,
   loadFrontivaPayinConfig,
   logFrontivaPayin,
+  parseFrontivaMerchant,
   validateFrontivaAmount,
   validateFrontivaCustomer,
 } from '../../_lib/frontiva-payin.js';
@@ -60,8 +62,11 @@ export function createHandler(deps = {}) {
 
     let orderRef = null;
 
+    let slot = null;
+
     try {
-      if (!available()) {
+      // Cheap gate before reading the body: no slot on at all.
+      if (!FRONTIVA_PAYIN_MERCHANTS.some((candidate) => available(candidate))) {
         json(res, 503, UNAVAILABLE);
         return;
       }
@@ -69,16 +74,32 @@ export function createHandler(deps = {}) {
       const body = parseBody(await readRawBody(req), req.headers['content-type']);
       const attemptId = String(body.attempt_id ?? '');
 
+      // The browser may only name a PayIn slot by number; absent is slot 1, so
+      // the original request body keeps working unchanged. Never an Airpay merchant.
+      slot = body.merchant === undefined ? 1 : parseFrontivaMerchant(body.merchant);
+
+      if (slot === null) {
+        json(res, 400, { error: 'Please choose a valid payment option.', code: 'invalid_merchant' });
+        return;
+      }
+
+      if (!available(slot)) {
+        // This slot is off or not configured. Never moved to another slot.
+        logEvent('payment.frontiva_payin.create.merchant_unavailable', { merchant: slot });
+        json(res, 503, UNAVAILABLE);
+        return;
+      }
+
       if (!ATTEMPT_ID.test(attemptId)) {
         json(res, 400, { error: 'Please refresh the page and try again.', code: 'invalid_attempt' });
         return;
       }
 
-      // Anything the browser claims about price, merchant or gateway is ignored.
+      // Anything the browser claims about price or gateway is ignored.
       const items = normalizeItems(body.items);
       const customer = normalizeCustomer(body.customer);
       const payinCustomer = validateFrontivaCustomer(customer, body.email);
-      const payinConfig = loadConfig();
+      const payinConfig = loadConfig(slot);
 
       const { items: pricedItems, totalInCents } = await price(items);
       const amountInPaise = validateFrontivaAmount(totalInCents);
@@ -94,7 +115,7 @@ export function createHandler(deps = {}) {
 
       if (!claim.claimed) {
         // Same attempt sent twice: never a second order or PayIn.
-        logEvent('payment.frontiva_payin.create.duplicate_attempt', { order_ref: claim.orderRef });
+        logEvent('payment.frontiva_payin.create.duplicate_attempt', { order_ref: claim.orderRef, merchant: slot });
         json(res, 409, {
           error: 'This payment is already being processed.',
           code: 'duplicate_attempt',
@@ -109,13 +130,15 @@ export function createHandler(deps = {}) {
         totalInCents,
         gateway: FRONTIVA_PAYIN_GATEWAY,
         orderRef,
+        // Bound in the same INSERT, before any provider call: settlement asks this slot only.
+        ...(slot !== 1 ? { frontivaMerchant: slot } : {}),
       });
 
       const result = await createPayin({ orderRef, amountInPaise, customer: payinCustomer, config: payinConfig });
 
       if (result.kind === 'rejected' || result.kind === 'auth_failed') {
         // Definitely not created: nothing can be paid against this order.
-        logFrontivaPayin('payment.frontiva_payin.create.refused', { order_ref: orderRef, kind: result.kind, reason: result.reason });
+        logFrontivaPayin('payment.frontiva_payin.create.refused', { order_ref: orderRef, merchant: slot, kind: result.kind, reason: result.reason });
         await recordTransaction(orderRef, { create_state: result.kind, last_error: result.reason });
         await closeFrontivaOrder(orderRef, 'failed').catch(() => {});
         json(res, result.kind === 'auth_failed' ? 503 : 502, result.kind === 'auth_failed' ? UNAVAILABLE : NOT_STARTED);
@@ -129,6 +152,7 @@ export function createHandler(deps = {}) {
 
         logFrontivaPayin('payment.frontiva_payin.create.ambiguous', {
           order_ref: orderRef,
+          merchant: slot,
           reason: result.reason,
           lookup: lookup.outcome,
         });
@@ -167,13 +191,14 @@ export function createHandler(deps = {}) {
       if (!result.launch) {
         // No intent we can safely show (wrong payee, amount, format…). Never
         // shown to the customer; the PayIn stays open and is reconciled to its end.
-        logFrontivaPayin('payment.frontiva_payin.create.unsupported_launch', { order_ref: orderRef, reason: result.launchProblem });
+        logFrontivaPayin('payment.frontiva_payin.create.unsupported_launch', { order_ref: orderRef, merchant: slot, reason: result.launchProblem });
         json(res, 502, NOT_STARTED);
         return;
       }
 
       logEvent('payment.frontiva_payin.create.ok', {
         order_ref: orderRef,
+        merchant: slot,
         amount_in_paise: amountInPaise,
         portal_request_id: result.portalRequestId,
         launch_type: result.launch.type,
@@ -196,13 +221,13 @@ export function createHandler(deps = {}) {
       }
 
       if (error instanceof ConfigError || error?.isConfigError) {
-        logEvent('payment.frontiva_payin.create.misconfigured', { detail: error.message });
+        logEvent('payment.frontiva_payin.create.misconfigured', { merchant: slot, detail: error.message });
         json(res, 503, UNAVAILABLE);
         return;
       }
 
       const kind = error?.isDatabaseError ? 'database' : 'unexpected';
-      logEvent('payment.frontiva_payin.create.failed', { order_ref: orderRef, kind });
+      logEvent('payment.frontiva_payin.create.failed', { order_ref: orderRef, merchant: slot, kind });
       json(res, 502, { ...NOT_STARTED, code: kind });
     }
   };

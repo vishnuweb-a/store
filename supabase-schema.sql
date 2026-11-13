@@ -170,6 +170,17 @@ create index if not exists orders_frontiva_payin_open_idx
   on public.orders (last_checked_at nulls first)
   where payment_gateway = 'frontiva_payin';
 
+-- Frontiva PayIn account (slot) an order was placed on; NULL = slot 1.
+-- Separate from airpay_merchant. See migrations-frontiva-payin-merchants.sql.
+alter table public.orders add column if not exists frontiva_payin_merchant smallint;
+alter table public.orders drop constraint if exists orders_frontiva_payin_merchant_check;
+alter table public.orders
+  add constraint orders_frontiva_payin_merchant_check
+  check (
+    frontiva_payin_merchant is null
+    or (payment_gateway = 'frontiva_payin' and frontiva_payin_merchant between 2 and 99)
+  );
+
 -- Unique rather than a primary key so Cash on Delivery rows, which have no
 -- order_ref, are unaffected: Postgres allows unlimited nulls in a unique index.
 create unique index if not exists orders_order_ref_key on public.orders (order_ref);

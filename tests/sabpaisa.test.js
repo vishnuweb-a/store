@@ -567,14 +567,15 @@ describe('GET /api/payments/options', () => {
 
     const response = await call(optionsHandler, { method: 'GET' });
 
-    assert.deepEqual(response.json(), { merchants: [1], sabpaisa: true });
+    // Airpay merchant 1 is configured but temporarily disabled (AIRPAY_MID_1), so its list is empty.
+    assert.deepEqual(response.json(), { merchants: [], sabpaisa: true });
   });
 
   test('reports sabpaisa: false when disabled, leaving merchants unchanged', async () => {
     Object.assign(process.env, AIRPAY_M1);
     process.env.SABPAISA_ENABLED = 'false';
 
-    assert.deepEqual((await call(optionsHandler, { method: 'GET' })).json(), { merchants: [1], sabpaisa: false });
+    assert.deepEqual((await call(optionsHandler, { method: 'GET' })).json(), { merchants: [], sabpaisa: false });
   });
 });
 

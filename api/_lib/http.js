@@ -167,6 +167,8 @@ export function scrubSecrets(text, limit = 300) {
     process.env.SUBPAISA_API_KEY,
     process.env.SUBPAISA_SECRET_KEY,
     process.env.FRONTIVA_PAYIN_PASSWORD,
+    // Each additional Frontiva PayIn slot's password, alongside slot 1's.
+    process.env.FRONTIVA_PAYIN_PASSWORD_2,
     process.env.SUPABASE_SERVICE_ROLE,
     process.env.CRON_SECRET,
   ].filter((value) => value && String(value).length >= 4);

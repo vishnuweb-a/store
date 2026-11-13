@@ -8,10 +8,6 @@
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import test, { afterEach, beforeEach, describe } from 'node:test';
-import jsQR from 'jsqr';
-import { QRCodeSVG } from 'qrcode.react';
-import { createElement } from 'react';
-import { renderToStaticMarkup } from 'react-dom/server';
 import {
   classifyFrontivaStatus,
   createFrontivaPayin,
@@ -34,6 +30,7 @@ import reconcileHandler from '../api/payments/frontiva-payin/reconcile.js';
 import optionsHandler from '../api/payments/options.js';
 import statusHandler from '../api/payments/status.js';
 import { PORTAL, installWorld, respond } from './helpers/fake-world.js';
+import { decodeRenderedQr } from './helpers/qr.js';
 
 const read = (relative) => readFileSync(new URL(relative, import.meta.url), 'utf8');
 
@@ -829,7 +826,10 @@ describe('isolation from existing gateways', () => {
     const source = read('../apps/web/src/api/OrdersApi.js');
     const fn = source.slice(source.indexOf('export async function createFrontivaPayinPayment'), source.indexOf('export function isFrontivaPayinLaunch'));
     assert.match(fn, /\/api\/payments\/frontiva-payin\/create/);
-    assert.doesNotMatch(fn, /\/api\/payments\/create'|merchant/);
+    assert.doesNotMatch(fn, /\/api\/payments\/create'/);
+    // `merchant` is the PayIn slot, sent only when not 1: slot 1's body is unchanged.
+    assert.match(fn, /JSON\.stringify\(\{ customer, email, items, attempt_id: attemptId, \.\.\.\(slot !== 1 \? \{ merchant: slot \} : \{\}\) \}\)/);
+    assert.equal((fn.match(/merchant/g) || []).length, 1, 'no other merchant field is sent');
   });
 
   test('the QR encodes the intent untransformed, and the browser never follows a data: url', () => {
@@ -843,30 +843,6 @@ describe('isolation from existing gateways', () => {
 });
 
 // --- Release hardening --------------------------------------------------------
-
-/** Renders the same QRCodeSVG props the success page uses, rasterises the SVG and decodes it like a scanner would. */
-function decodeRenderedQr(value, { scale = 6 } = {}) {
-  const svg = renderToStaticMarkup(
-    createElement(QRCodeSVG, { value, size: 320, level: 'M', marginSize: 4, bgColor: '#ffffff', fgColor: '#000000' }),
-  );
-  const cells = Number(svg.match(/viewBox="0 0 (\d+) \d+"/)[1]);
-  const dark = svg.split('<path')[2];
-  const side = cells * scale;
-  const pixels = new Uint8ClampedArray(side * side * 4).fill(255);
-
-  for (const [, x, y, w] of dark.matchAll(/M(\d+)[ ,](\d+) ?h(\d+)v1H\d+z/g)) {
-    for (let row = 0; row < scale; row += 1) {
-      for (let col = 0; col < Number(w) * scale; col += 1) {
-        const at = ((Number(y) * scale + row) * side + Number(x) * scale + col) * 4;
-        pixels[at] = 0;
-        pixels[at + 1] = 0;
-        pixels[at + 2] = 0;
-      }
-    }
-  }
-
-  return jsQR(pixels, side, side);
-}
 
 describe('QR code round trip', () => {
   const sample = 'upi://pay?pa=frontivatrading373991.apy@rbl&pn=Frontiva+Trading+Private+Limited&cu=INR&tn=Pay+to+Frontiva+Trading+Private+Limited&am=10.00&mc=5691&mode=04&tr=AIRPAY2094593073';
@@ -909,7 +885,9 @@ describe('success page markup', () => {
   test('shows the amount, the order reference, the payee name and the live status', () => {
     assert.match(page, /Amount to pay/);
     assert.match(page, /order\.order_ref/);
-    assert.match(page, /Frontiva Trading Private Limited/);
+    // From the server (per PayIn slot); slot 1 still gets the name it always showed.
+    assert.match(page, /onlineOrder\?\.payee_name \? ` to \$\{onlineOrder\.payee_name\}`/);
+    assert.match(read('../api/payments/status.js'), /'Frontiva Trading Private Limited'/);
     assert.match(page, /Waiting for payment/);
   });
 
@@ -1113,11 +1091,14 @@ describe('environment variables', () => {
     const source = ['../api/_lib/frontiva-payin.js', '../api/_lib/frontiva-payin-orders.js', '../api/payments/frontiva-payin/create.js', '../api/payments/frontiva-payin/reconcile.js']
       .map(read)
       .join('\n');
-    const names = [...new Set(source.match(/FRONTIVA_PAYIN_[A-Z_]+/g))].filter((n) => !/GATEWAY|TIMEOUT_MS|PAYMENT_MODE|CURRENCY|MIN_AMOUNT|DEFAULT_BASE/.test(n)).sort();
+    const names = [...new Set(source.match(/FRONTIVA_PAYIN_[A-Z_]+/g))].filter((n) => !/GATEWAY|TIMEOUT_MS|PAYMENT_MODE|CURRENCY|MIN_AMOUNT|DEFAULT_BASE|^FRONTIVA_PAYIN_MERCHANTS$/.test(n)).sort();
     assert.deepEqual(names, [
       'FRONTIVA_PAYIN_ALLOWED_PAYEES', 'FRONTIVA_PAYIN_BASE_URL', 'FRONTIVA_PAYIN_EMAIL', 'FRONTIVA_PAYIN_ENABLED',
-      'FRONTIVA_PAYIN_EXPECTED_MERCHANT_ID', 'FRONTIVA_PAYIN_PASSWORD',
+      'FRONTIVA_PAYIN_EXPECTED_MERCHANT_ID', 'FRONTIVA_PAYIN_PASSWORD', 'FRONTIVA_PAYIN_PAYEE_NAME',
     ]);
+    // Slots ≥ 2 read the same roles with a `_N` suffix, built from the slot number only.
+    assert.match(source, /`FRONTIVA_PAYIN_EMAIL\$\{suffix\}`/);
+    assert.match(source, /const slotSuffix = \(slot\) => \(slot === 1 \? '' : `_\$\{slot\}`\);/);
     assert.doesNotMatch(source, /FRONTIVA_PAYIN_CLIENT_SECRET|FRONTIVA_PAYIN_MERCHANT_ID|FRONTIVA_PAYIN_LAUNCH_HOSTS/);
   });
 

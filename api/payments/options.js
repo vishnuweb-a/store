@@ -10,7 +10,7 @@
  * it behaved before the second account existed.
  */
 import { checkoutMerchants, sabpaisaAvailable } from '../_lib/config.js';
-import { frontivaPayinAvailable } from '../_lib/frontiva-payin.js';
+import { availableFrontivaMerchants } from '../_lib/frontiva-payin.js';
 import { allowMethods, json } from '../_lib/http.js';
 
 export default async function handler(req, res) {
@@ -18,10 +18,14 @@ export default async function handler(req, res) {
     return;
   }
 
+  const payinSlots = availableFrontivaMerchants();
+
   json(res, 200, {
     merchants: checkoutMerchants(),
     sabpaisa: sabpaisaAvailable(),
     // Only named when on, so the response is unchanged while Frontiva PayIn is off.
-    ...(frontivaPayinAvailable() ? { frontiva_payin: true } : {}),
+    ...(payinSlots.includes(1) ? { frontiva_payin: true } : {}),
+    // PayIn slot numbers (not Airpay merchants); only named when a slot ≥ 2 is on.
+    ...(payinSlots.some((slot) => slot !== 1) ? { frontiva_payin_merchants: payinSlots } : {}),
   });
 }

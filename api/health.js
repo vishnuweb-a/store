@@ -29,6 +29,7 @@ import {
   siteOrigin,
 } from './_lib/config.js';
 import {
+  FRONTIVA_PAYIN_MERCHANTS,
   frontivaPayinAvailable,
   frontivaPayinEnabled,
   isFrontivaPayinConfigured,
@@ -115,8 +116,16 @@ export default async function handler(req, res) {
     offered_at_checkout: frontivaPayinAvailable(),
   };
 
+  // Slots 2+ on their own key, so the slot-1 block above is unchanged.
+  const frontivaPayinMerchants = Object.fromEntries(
+    FRONTIVA_PAYIN_MERCHANTS.filter((slot) => slot !== 1).map((slot) => [
+      slot,
+      { configured: isFrontivaPayinConfigured(slot), enabled: frontivaPayinEnabled(slot), offered_at_checkout: frontivaPayinAvailable(slot) },
+    ]),
+  );
+
   if (!isCronAuthorized(req)) {
-    json(res, ready ? 200 : 503, { ok: ready, configured, merchants, environment, sabpaisa, frontiva_payin: frontivaPayin });
+    json(res, ready ? 200 : 503, { ok: ready, configured, merchants, environment, sabpaisa, frontiva_payin: frontivaPayin, frontiva_payin_merchants: frontivaPayinMerchants });
     return;
   }
 
@@ -151,6 +160,7 @@ export default async function handler(req, res) {
       ...oauthByMerchant,
       sabpaisa,
       frontiva_payin: frontivaPayin,
+      frontiva_payin_merchants: frontivaPayinMerchants,
     });
   } catch (error) {
     logEvent('payment.health.oauth_failed', {
@@ -168,6 +178,7 @@ export default async function handler(req, res) {
       ...oauthByMerchant,
       sabpaisa,
       frontiva_payin: frontivaPayin,
+      frontiva_payin_merchants: frontivaPayinMerchants,
     });
   }
 }

@@ -12,7 +12,7 @@
 import { classifyTransaction, confirmOrder } from './airpay.js';
 import { SABPAISA_GATEWAY, loadSabpaisaConfig, parseMerchant } from './config.js';
 import { newOrderRef } from './crypto.js';
-import { FRONTIVA_PAYIN_GATEWAY } from './frontiva-payin.js';
+import { FRONTIVA_PAYIN_GATEWAY, parseFrontivaMerchant } from './frontiva-payin.js';
 import { settleFrontivaPayinOrder } from './frontiva-payin-orders.js';
 import { logEvent } from './http.js';
 import { formatInr } from './pricing.js';
@@ -44,14 +44,15 @@ export const RECONCILABLE_STATUSES = ['initiated', 'processing', 'requires_revie
  * @param {'sabpaisa'|'frontiva_payin'} [params.gateway] - Set only for a non-Airpay payment.
  *   Absent means Airpay, and the insert is exactly the one Airpay has always made.
  * @param {string} [params.orderRef] - Pre-generated reference (Frontiva PayIn claims its attempt first)
+ * @param {1|2} [params.frontivaMerchant] - Frontiva PayIn slot (not an Airpay merchant). Written only when ≠ 1.
  * @returns {Promise<{id: number, order_ref: string, created_at: string}>}
  */
-export async function createPendingOrder({ customer, items, totalInCents, merchant = 1, gateway, orderRef: givenRef }) {
+export async function createPendingOrder({ customer, items, totalInCents, merchant = 1, gateway, orderRef: givenRef, frontivaMerchant }) {
   const orderRef = gateway !== undefined && givenRef ? givenRef : newOrderRef();
   const now = new Date().toISOString();
 
   if (gateway !== undefined) {
-    return createPendingGatewayOrder({ customer, items, totalInCents, gateway, orderRef, now });
+    return createPendingGatewayOrder({ customer, items, totalInCents, gateway, orderRef, now, frontivaMerchant });
   }
 
   const id = parseMerchant(merchant);
@@ -91,12 +92,21 @@ export async function createPendingOrder({ customer, items, totalInCents, mercha
  * insert above so that one stays byte-for-byte what production has run. Never
  * names airpay_merchant: a SabPaisa order belongs to no Airpay account.
  */
-async function createPendingGatewayOrder({ customer, items, totalInCents, gateway, orderRef, now }) {
+async function createPendingGatewayOrder({ customer, items, totalInCents, gateway, orderRef, now, frontivaMerchant }) {
   if (gateway !== SABPAISA_GATEWAY && gateway !== FRONTIVA_PAYIN_GATEWAY) {
     throw new Error('Order could not be created');
   }
 
+  // Same convention as airpay_merchant: NULL is PayIn slot 1, so slot 1's and
+  // SabPaisa's inserts stay exactly what production runs today.
+  const payinSlot = gateway === FRONTIVA_PAYIN_GATEWAY && frontivaMerchant !== undefined && frontivaMerchant !== 1 ? frontivaMerchant : null;
+
+  if (payinSlot !== null && !parseFrontivaMerchant(payinSlot)) {
+    throw new Error('Order could not be created');
+  }
+
   const [row] = await insert('orders', {
+    ...(payinSlot !== null ? { frontiva_payin_merchant: payinSlot } : {}),
     payment_gateway: gateway,
     enquiry_count: 0,
     customer_name: customer.fullName,

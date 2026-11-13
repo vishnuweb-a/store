@@ -11,11 +11,13 @@ import { useToast } from '@/hooks/use-toast';
 import { formatCurrency, getCartItemSize } from '@/api/EcommerceApi';
 import {
   FRONTIVA_PAYIN_GATEWAY,
+  FRONTIVA_PAYIN_GATEWAY_2,
   SABPAISA_GATEWAY,
   createCodOrder,
   createFrontivaPayinPayment,
   createOnlinePayment,
   createSabpaisaPayment,
+  frontivaSlotFor,
   getPaymentGateways,
   redirectToSabpaisa,
   submitPayment,
@@ -41,22 +43,25 @@ const PAYMENT_METHODS = [
 
 /** The online payment gateways, by the number the server knows them as. */
 const PAYMENT_GATEWAYS = [
-  { id: 1, label: 'Pay with Airpay 1' },
+  // TEMPORARILY DISABLED: AIRPAY MID_1 — do not delete; see OrdersApi.js PAYMENT_GATEWAYS.
+  // { id: 1, label: 'Pay with Airpay 1' },
   // TEMPORARILY DISABLED: AIRPAY MID_2 — do not delete; see OrdersApi.js PAYMENT_GATEWAYS.
   // { id: 2, label: 'Pay with Airpay 2' },
   { id: 3, label: 'Pay with Airpay 3' },
   { id: SABPAISA_GATEWAY, label: 'Pay with SabPaisa' },
   { id: FRONTIVA_PAYIN_GATEWAY, label: 'Pay with Frontiva PayIn' },
+  // A second Frontiva PayIn account (PayIn slot 2), shown only when the server offers it.
+  { id: FRONTIVA_PAYIN_GATEWAY_2, label: 'Pay with Frontiva PayIn 2' },
 ];
 
 const CheckoutPage = () => {
   const [isCartOpen, setIsCartOpen] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState('cod');
-  // Gateway 1 is the only one assumed until the server says otherwise, so the
-  // page behaves as it always has if the other gateways are not available.
-  const [availableGateways, setAvailableGateways] = useState([1]);
-  const [gateway, setGateway] = useState(1);
+  // Gateway 3 is the only one assumed until the server says otherwise (Airpay 1
+  // and 2 are temporarily disabled), and the server still refuses it if it is off.
+  const [availableGateways, setAvailableGateways] = useState([3]);
+  const [gateway, setGateway] = useState(3);
   const [rejectedItems, setRejectedItems] = useState([]);
   const [errors, setErrors] = useState({});
   const orderPlacedRef = useRef(false);
@@ -117,7 +122,9 @@ const CheckoutPage = () => {
   const staleItems = rejectedItems.length > 0 ? rejectedItems : unpriceableItems;
 
   const isOnline = paymentMethod === 'online';
-  const isFrontivaPayin = isOnline && gateway === FRONTIVA_PAYIN_GATEWAY;
+  // Any PayIn slot: same email field, QR flow and errors for each account.
+  const payinSlot = frontivaSlotFor(gateway);
+  const isFrontivaPayin = isOnline && payinSlot !== null;
   const gatewayOptions = PAYMENT_GATEWAYS.filter((option) => availableGateways.includes(option.id));
   const selectedMethod = PAYMENT_METHODS.find((method) => method.id === paymentMethod) ?? PAYMENT_METHODS[0];
 
@@ -156,7 +163,7 @@ const CheckoutPage = () => {
       }
     }
 
-    if (paymentMethod === 'online' && gateway === FRONTIVA_PAYIN_GATEWAY) {
+    if (paymentMethod === 'online' && payinSlot !== null) {
       if (!payinEmail.trim()) {
         nextErrors.email = 'Email is required for Frontiva PayIn.';
       } else if (!/^[^\s@<>"']+@[^\s@<>"']+\.[A-Za-z]{2,}$/.test(payinEmail.trim())) {
@@ -195,7 +202,7 @@ const CheckoutPage = () => {
 
     setIsProcessing(true);
 
-    if (paymentMethod === 'online' && gateway === FRONTIVA_PAYIN_GATEWAY) {
+    if (paymentMethod === 'online' && payinSlot !== null) {
       payinAttemptRef.current = payinAttemptRef.current || crypto.randomUUID();
 
       try {
@@ -204,6 +211,7 @@ const CheckoutPage = () => {
           email: payinEmail.trim(),
           cartItems,
           attemptId: payinAttemptRef.current,
+          slot: payinSlot,
         });
 
         // The status page shows the QR and polls the server. The intent rides

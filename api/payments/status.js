@@ -8,7 +8,8 @@
  * If the order is still open — the customer beat the callback back to the site
  * — one settlement attempt is made so the page can resolve on first load.
  */
-import { findFrontivaPayinIntent } from '../_lib/frontiva-payin-orders.js';
+import { FRONTIVA_PAYIN_GATEWAY, loadFrontivaPayinConfig } from '../_lib/frontiva-payin.js';
+import { findFrontivaPayinIntent, frontivaSlotForOrder } from '../_lib/frontiva-payin-orders.js';
 import { allowMethods, json, logEvent } from '../_lib/http.js';
 import { ONLINE_PAYMENT_METHOD, findOrderByRef, presentOrder, settleOrder } from '../_lib/orders.js';
 
@@ -39,6 +40,22 @@ export function maskCustomer(order) {
       landmark: '',
     },
   };
+}
+
+/** Slot 1 keeps the name its QR page has always shown; other slots show only a configured name. */
+const SLOT_1_PAYEE_NAME = 'Frontiva Trading Private Limited';
+
+function frontivaPayeeName(order) {
+  if (order.payment_gateway !== FRONTIVA_PAYIN_GATEWAY) return null;
+
+  const slot = frontivaSlotForOrder(order);
+  if (!slot) return null;
+
+  try {
+    return loadFrontivaPayinConfig(slot).payeeName || (slot === 1 ? SLOT_1_PAYEE_NAME : null);
+  } catch {
+    return slot === 1 ? SLOT_1_PAYEE_NAME : null;
+  }
 }
 
 export default async function handler(req, res) {
@@ -73,8 +90,14 @@ export default async function handler(req, res) {
     // Frontiva PayIn only: the QR to restore while the order is still payable,
     // and only for a caller that holds this checkout's attempt id (`k`).
     const intent = await findFrontivaPayinIntent(order, url.searchParams.get('k'));
+    const payeeName = frontivaPayeeName(order);
 
-    json(res, 200, { order: maskCustomer(presentOrder(order)), ...(intent ? { payment_intent: intent } : {}) });
+    json(res, 200, {
+      order: maskCustomer(presentOrder(order)),
+      ...(intent ? { payment_intent: intent } : {}),
+      // Non-secret legal name the customer's UPI app should show, for the account the order was placed on.
+      ...(payeeName ? { payee_name: payeeName } : {}),
+    });
   } catch (error) {
     logEvent('payment.status.failed', {
       kind: error?.isConfigError ? 'config' : error?.isDatabaseError ? 'database' : 'unexpected',

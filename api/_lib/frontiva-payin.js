@@ -67,18 +67,51 @@ function env(name) {
 }
 
 /**
- * Independent of FRONTIVA_PAYIN_ENABLED: the flag gates NEW payments only, and
- * orders already started must stay verifiable after it is switched off.
- *
- * @returns {{baseUrl: string, email: string, password: string, expectedMerchantId: string, allowedPayees: string[]}}
+ * The Frontiva PayIn merchant accounts (portal logins), by slot. Slot 1 is the
+ * original account and keeps the original, unsuffixed variable names; slot N
+ * reads the same roles from `_N` names. A separate namespace from the Airpay
+ * merchant numbers: PayIn slot 2 has nothing to do with Airpay MID 2.
  */
-export function loadFrontivaPayinConfig() {
+export const FRONTIVA_PAYIN_MERCHANTS = [1, 2];
+
+const slotSuffix = (slot) => (slot === 1 ? '' : `_${slot}`);
+
+/**
+ * Exactly a known slot (or its string form, as a JSON body or a database
+ * column may deliver it); everything else — including null — is null.
+ *
+ * @param {unknown} value
+ * @returns {1|2|null}
+ */
+export function parseFrontivaMerchant(value) {
+  return FRONTIVA_PAYIN_MERCHANTS.find((slot) => value === slot || value === String(slot)) ?? null;
+}
+
+/**
+ * One slot's credentials. Only that slot's variables are read (except the
+ * optional base URL, which may be shared): a missing slot-2 value is an error
+ * for slot 2 and never falls back to slot 1's credentials.
+ *
+ * Independent of FRONTIVA_PAYIN_ENABLED[_N]: the flag gates NEW payments only,
+ * and orders already started must stay verifiable after it is switched off.
+ *
+ * @param {1|2} [slot]
+ * @returns {{slot: 1|2, baseUrl: string, email: string, password: string, expectedMerchantId: string, allowedPayees: string[], payeeName: string|null}}
+ */
+export function loadFrontivaPayinConfig(slot = 1) {
+  const id = parseFrontivaMerchant(slot);
+
+  if (!id) {
+    throw new ConfigError('Unknown Frontiva PayIn merchant');
+  }
+
+  const suffix = slotSuffix(id);
   const values = {};
 
   for (const [role, name] of [
-    ['email', 'FRONTIVA_PAYIN_EMAIL'],
-    ['password', 'FRONTIVA_PAYIN_PASSWORD'],
-    ['expectedMerchantId', 'FRONTIVA_PAYIN_EXPECTED_MERCHANT_ID'],
+    ['email', `FRONTIVA_PAYIN_EMAIL${suffix}`],
+    ['password', `FRONTIVA_PAYIN_PASSWORD${suffix}`],
+    ['expectedMerchantId', `FRONTIVA_PAYIN_EXPECTED_MERCHANT_ID${suffix}`],
   ]) {
     values[role] = env(name);
 
@@ -87,56 +120,89 @@ export function loadFrontivaPayinConfig() {
     }
   }
 
-  const configured = env('FRONTIVA_PAYIN_BASE_URL').replace(/\/+$/, '') || FRONTIVA_PAYIN_DEFAULT_BASE_URL;
+  // Same portal for every account unless a slot says otherwise.
+  const configured =
+    (env(`FRONTIVA_PAYIN_BASE_URL${suffix}`) || env('FRONTIVA_PAYIN_BASE_URL')).replace(/\/+$/, '') ||
+    FRONTIVA_PAYIN_DEFAULT_BASE_URL;
 
   // Origin only, HTTPS only: the password is posted here.
   if (!/^https:\/\/[a-z0-9.-]+$/i.test(configured)) {
-    throw new ConfigError('FRONTIVA_PAYIN_BASE_URL must be an https origin');
+    throw new ConfigError(`FRONTIVA_PAYIN_BASE_URL${suffix} must be an https origin`);
   }
 
   return {
     ...values,
+    slot: id,
     baseUrl: configured,
-    // UPI payee addresses (pa) a QR may pay. Without one, no payment is started:
-    // a forged intent must never send a customer's money to another payee.
-    allowedPayees: env('FRONTIVA_PAYIN_ALLOWED_PAYEES')
+    // UPI payee addresses (pa) this slot's QR may pay. Without one, no payment
+    // is started: a forged intent must never send a customer's money elsewhere.
+    allowedPayees: env(`FRONTIVA_PAYIN_ALLOWED_PAYEES${suffix}`)
       .split(',')
       .map((vpa) => vpa.trim().toLowerCase())
       .filter(Boolean),
+    // Non-secret legal name shown on the QR page ("check your UPI app shows…").
+    payeeName: env(`FRONTIVA_PAYIN_PAYEE_NAME${suffix}`) || null,
   };
 }
 
-/** @returns {boolean} */
-export function isFrontivaPayinConfigured() {
+/** @param {1|2} [slot] @returns {boolean} */
+export function isFrontivaPayinConfigured(slot = 1) {
   try {
-    loadFrontivaPayinConfig();
+    loadFrontivaPayinConfig(slot);
     return true;
   } catch {
     return false;
   }
 }
 
-/** Only an explicit `true` enables new PayIn payments. Default off. */
-export function frontivaPayinEnabled() {
-  return env('FRONTIVA_PAYIN_ENABLED').toLowerCase() === 'true';
+/** Only an explicit `true` enables new PayIn payments on a slot. Default off. */
+export function frontivaPayinEnabled(slot = 1) {
+  const id = parseFrontivaMerchant(slot);
+  return id !== null && env(`FRONTIVA_PAYIN_ENABLED${slotSuffix(id)}`).toLowerCase() === 'true';
 }
 
 /**
- * Whether checkout may START a PayIn payment: on, configured, and the server
- * holds the Supabase service role (frontiva_payin_transactions has RLS with no
- * policy, so the anon fallback could not record the attempt).
+ * A slot ≥ 2 that logs in as another slot's account, or expects another slot's
+ * portal merchant id, cannot be told apart from it by any check we make, so it
+ * is never offered. Slot 1 is never switched off by another slot's mistake.
  */
-export function frontivaPayinAvailable() {
-  if (!frontivaPayinEnabled() || !isFrontivaPayinConfigured()) {
+function collidesWithAnotherSlot(config) {
+  return (
+    config.slot !== 1 &&
+    FRONTIVA_PAYIN_MERCHANTS.some((other) => {
+      if (other === config.slot) return false;
+      const suffix = slotSuffix(other);
+      return (
+        env(`FRONTIVA_PAYIN_EMAIL${suffix}`).toLowerCase() === config.email.toLowerCase() ||
+        env(`FRONTIVA_PAYIN_EXPECTED_MERCHANT_ID${suffix}`) === config.expectedMerchantId
+      );
+    })
+  );
+}
+
+/**
+ * Whether checkout may START a PayIn payment on a slot: on, configured, not
+ * colliding with another slot, and the server holds the Supabase service role
+ * (frontiva_payin_transactions has RLS with no policy, so the anon fallback
+ * could not record the attempt).
+ */
+export function frontivaPayinAvailable(slot = 1) {
+  if (!frontivaPayinEnabled(slot) || !isFrontivaPayinConfigured(slot)) {
     return false;
   }
 
   try {
+    const config = loadFrontivaPayinConfig(slot);
     // No allowed payee: every QR would be refused, so do not start (and waste) PayIns.
-    return loadFrontivaPayinConfig().allowedPayees.length > 0 && supabaseConfig().usingServiceRole;
+    return config.allowedPayees.length > 0 && !collidesWithAnotherSlot(config) && supabaseConfig().usingServiceRole;
   } catch {
     return false;
   }
+}
+
+/** @returns {(1|2)[]} the slots a new PayIn may be started on */
+export function availableFrontivaMerchants() {
+  return FRONTIVA_PAYIN_MERCHANTS.filter((slot) => frontivaPayinAvailable(slot));
 }
 
 // --- Signature ----------------------------------------------------------------
@@ -245,18 +311,30 @@ export function validateFrontivaAmount(amountInPaise) {
  *
  * shortcut: no cross-instance token sharing (storing the token would persist a
  * secret); move to a secret store if login volume ever becomes a problem.
+ *
+ * One entry per merchant slot and login identity: a slot-2 login failure,
+ * cooldown or invalidation never touches slot 1's session, and a token is
+ * never presented for an account other than the one it was issued to.
  */
-let cachedSession = null;
-let inflightLogin = null;
-let loginBlockedUntil = 0;
-let lastLoginError = null;
+const sessions = new Map();
 
-/** Test hook: forget the cached session and any login cooldown. */
+function sessionKey(config) {
+  return `${config.slot ?? 1}|${config.baseUrl}|${String(config.email).toLowerCase()}`;
+}
+
+function sessionEntry(config) {
+  const key = sessionKey(config);
+
+  if (!sessions.has(key)) {
+    sessions.set(key, { cached: null, inflight: null, blockedUntil: 0, lastError: null });
+  }
+
+  return sessions.get(key);
+}
+
+/** Test hook: forget every slot's cached session and login cooldown. */
 export function resetFrontivaSession() {
-  cachedSession = null;
-  inflightLogin = null;
-  loginBlockedUntil = 0;
-  lastLoginError = null;
+  sessions.clear();
 }
 
 /** Reads `exp` from a JWT without trusting it for anything but cache expiry. */
@@ -347,43 +425,47 @@ async function login(config, { doFetch, now }) {
 export async function getFrontivaSession(config, deps = {}) {
   const now = deps.now || Date.now;
   const doFetch = deps.fetch || fetchWithTimeout;
+  const entry = sessionEntry(config);
 
-  if (cachedSession && cachedSession.expiresAt > now()) {
-    return cachedSession;
+  // A cached session is used only for the portal merchant this config expects.
+  if (entry.cached && entry.cached.expiresAt > now() && entry.cached.merchantId === config.expectedMerchantId) {
+    return entry.cached;
   }
 
-  if (inflightLogin) {
-    return inflightLogin;
+  if (entry.inflight) {
+    return entry.inflight;
   }
 
-  if (now() < loginBlockedUntil) {
-    throw lastLoginError || new FrontivaPayinError('unavailable', 'login cooling down');
+  if (now() < entry.blockedUntil) {
+    throw entry.lastError || new FrontivaPayinError('unavailable', 'login cooling down');
   }
 
-  inflightLogin = login(config, { doFetch, now })
+  entry.inflight = login(config, { doFetch, now })
     .then((session) => {
-      cachedSession = session;
-      lastLoginError = null;
+      entry.cached = session;
+      entry.lastError = null;
       return session;
     })
     .catch((error) => {
-      cachedSession = null;
-      lastLoginError = error;
-      loginBlockedUntil = now() + LOGIN_FAILURE_COOLDOWN_MS;
-      logFrontivaPayin('payment.frontiva_payin.login_failed', { kind: error?.kind, reason: error?.message });
+      entry.cached = null;
+      entry.lastError = error;
+      entry.blockedUntil = now() + LOGIN_FAILURE_COOLDOWN_MS;
+      logFrontivaPayin('payment.frontiva_payin.login_failed', { merchant: config.slot ?? 1, kind: error?.kind, reason: error?.message });
       throw error;
     })
     .finally(() => {
-      inflightLogin = null;
+      entry.inflight = null;
     });
 
-  return inflightLogin;
+  return entry.inflight;
 }
 
-/** Drops a session the API refused, unless a newer one already replaced it. */
-function invalidateSession(session) {
-  if (cachedSession === session) {
-    cachedSession = null;
+/** Drops a session the API refused (this slot's only), unless a newer one already replaced it. */
+function invalidateSession(config, session) {
+  const entry = sessionEntry(config);
+
+  if (entry.cached === session) {
+    entry.cached = null;
   }
 }
 
@@ -412,7 +494,7 @@ async function signedRequest(config, { method, path, reference, body }, deps = {
     );
 
     if ((response.status === 401 || response.status === 403) && attempt === 1) {
-      invalidateSession(session);
+      invalidateSession(config, session);
       continue;
     }
 
@@ -459,6 +541,7 @@ export function upiIntentProblem(intent, { amountInPaise, allowedPayees }) {
   const payee = get('pa');
 
   if (!payee || !VPA.test(payee)) return 'payee address missing or invalid';
+  // `allowedPayees` is the creating slot's own list, never another slot's.
   if (!allowedPayees.includes(payee.toLowerCase())) return 'payee not in FRONTIVA_PAYIN_ALLOWED_PAYEES';
   if (get('cu') !== FRONTIVA_PAYIN_CURRENCY) return 'currency is not INR';
 
@@ -619,6 +702,8 @@ export async function createFrontivaPayin({ orderRef, amountInPaise, customer, c
 export async function fetchFrontivaPayinStatus(orderRef, deps = {}) {
   let config = deps.config;
 
+  // Without an explicit config this is slot 1 (the original account). Callers
+  // settling a slot ≥ 2 order always pass that slot's config.
   try {
     config = config || loadFrontivaPayinConfig();
   } catch {
