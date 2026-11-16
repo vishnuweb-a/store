@@ -102,13 +102,21 @@ export async function createCodOrder({ customer, cartItems }) {
 // api/_lib/config.js) and the UI (restore 1 here and in CheckoutPage.jsx).
 // ====================================================
 // export const PAYMENT_GATEWAYS = [1, 3];
-export const PAYMENT_GATEWAYS = [3];
+// ====================================================
+// TEMPORARILY DISABLED: AIRPAY MID_3
+// Reason: the third checkout option is now Frontiva PayIn (slot 3).
+// IMPORTANT: Do not delete the implementation. Reactivation requires the MID 3
+// flag in api/_lib/config.js and restoring 3 here and in CheckoutPage.jsx.
+// ====================================================
+// export const PAYMENT_GATEWAYS = [3];
+export const PAYMENT_GATEWAYS = [];
 
 /**
- * Assumed only when /api/payments/options cannot be read. Never a disabled
- * merchant; the server still refuses it if merchant 3 is off.
+ * Assumed only when /api/payments/options cannot be read. Every Airpay merchant
+ * is disabled, so nothing is assumed: online options appear only on the
+ * server's explicit word.
  */
-const FALLBACK_GATEWAYS = [3];
+const FALLBACK_GATEWAYS = [];
 
 /** The id the SabPaisa option is known by in the gateway list. */
 export const SABPAISA_GATEWAY = 'sabpaisa';
@@ -119,16 +127,20 @@ export const FRONTIVA_PAYIN_GATEWAY = 'frontiva_payin';
 /** Frontiva PayIn slot 2: a second PayIn account, unrelated to Airpay merchant 2. */
 export const FRONTIVA_PAYIN_GATEWAY_2 = 'frontiva_payin_2';
 
+/** Frontiva PayIn slot 3: a third PayIn account (replaces the Airpay MID 3 checkout option). */
+export const FRONTIVA_PAYIN_GATEWAY_3 = 'frontiva_payin_3';
+
 /**
- * The PayIn slot a gateway id names: 1 for 'frontiva_payin', 2 for
- * 'frontiva_payin_2', otherwise null (not a PayIn option).
+ * The PayIn slot a gateway id names: 1 for 'frontiva_payin', N for
+ * 'frontiva_payin_N', otherwise null (not a PayIn option).
  *
  * @param {unknown} id
- * @returns {1|2|null}
+ * @returns {1|2|3|null}
  */
 export function frontivaSlotFor(id) {
   if (id === FRONTIVA_PAYIN_GATEWAY) return 1;
   if (id === FRONTIVA_PAYIN_GATEWAY_2) return 2;
+  if (id === FRONTIVA_PAYIN_GATEWAY_3) return 3;
   return null;
 }
 
@@ -137,11 +149,10 @@ export function frontivaSlotFor(id) {
  *
  * The answer is the Airpay gateway numbers, followed by 'sabpaisa' and the
  * Frontiva PayIn ids when the server offers them. If it cannot be read,
- * FALLBACK_GATEWAYS (Airpay 3; Airpay 1 and 2 are temporarily disabled) is
- * assumed so a failure here never takes online payment away. Every other
- * option is only ever added on the server's explicit word.
+ * FALLBACK_GATEWAYS (empty: every Airpay merchant is temporarily disabled) is
+ * assumed. Every option is only ever added on the server's explicit word.
  *
- * @returns {Promise<Array<number|'sabpaisa'|'frontiva_payin'|'frontiva_payin_2'>>}
+ * @returns {Promise<Array<number|'sabpaisa'|'frontiva_payin'|'frontiva_payin_2'|'frontiva_payin_3'>>}
  */
 export async function getPaymentGateways() {
   try {
@@ -157,10 +168,13 @@ export async function getPaymentGateways() {
     const withPayin =
       response.ok && payload?.frontiva_payin === true ? [...withSabpaisa, FRONTIVA_PAYIN_GATEWAY] : withSabpaisa;
 
-    // PayIn slot 2 only on the server's explicit word.
-    return response.ok && Array.isArray(payload?.frontiva_payin_merchants) && payload.frontiva_payin_merchants.includes(2)
-      ? [...withPayin, FRONTIVA_PAYIN_GATEWAY_2]
-      : withPayin;
+    // PayIn slots 2 and 3 only on the server's explicit word.
+    const slots = response.ok && Array.isArray(payload?.frontiva_payin_merchants) ? payload.frontiva_payin_merchants : [];
+    return [
+      ...withPayin,
+      ...(slots.includes(2) ? [FRONTIVA_PAYIN_GATEWAY_2] : []),
+      ...(slots.includes(3) ? [FRONTIVA_PAYIN_GATEWAY_3] : []),
+    ];
   } catch (error) {
     return FALLBACK_GATEWAYS;
   }

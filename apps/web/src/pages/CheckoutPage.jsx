@@ -12,6 +12,7 @@ import { formatCurrency, getCartItemSize } from '@/api/EcommerceApi';
 import {
   FRONTIVA_PAYIN_GATEWAY,
   FRONTIVA_PAYIN_GATEWAY_2,
+  FRONTIVA_PAYIN_GATEWAY_3,
   SABPAISA_GATEWAY,
   createCodOrder,
   createFrontivaPayinPayment,
@@ -47,7 +48,10 @@ const PAYMENT_GATEWAYS = [
   // { id: 1, label: 'Pay with Airpay 1' },
   // TEMPORARILY DISABLED: AIRPAY MID_2 — do not delete; see OrdersApi.js PAYMENT_GATEWAYS.
   // { id: 2, label: 'Pay with Airpay 2' },
-  { id: 3, label: 'Pay with Airpay 3' },
+  // TEMPORARILY DISABLED: AIRPAY MID_3 — do not delete; see OrdersApi.js PAYMENT_GATEWAYS.
+  // { id: 3, label: 'Pay with Airpay 3' },
+  // The third option, in Airpay 3's old place: a third Frontiva PayIn account (slot 3).
+  { id: FRONTIVA_PAYIN_GATEWAY_3, label: 'Pay with Frontiva PayIn 3' },
   { id: SABPAISA_GATEWAY, label: 'Pay with SabPaisa' },
   { id: FRONTIVA_PAYIN_GATEWAY, label: 'Pay with Frontiva PayIn' },
   // A second Frontiva PayIn account (PayIn slot 2), shown only when the server offers it.
@@ -58,10 +62,10 @@ const CheckoutPage = () => {
   const [isCartOpen, setIsCartOpen] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState('cod');
-  // Gateway 3 is the only one assumed until the server says otherwise (Airpay 1
-  // and 2 are temporarily disabled), and the server still refuses it if it is off.
-  const [availableGateways, setAvailableGateways] = useState([3]);
-  const [gateway, setGateway] = useState(3);
+  // Nothing is assumed until the server lists what is on (every Airpay merchant
+  // is temporarily disabled); the server also refuses anything that is off.
+  const [availableGateways, setAvailableGateways] = useState([]);
+  const [gateway, setGateway] = useState(null);
   const [rejectedItems, setRejectedItems] = useState([]);
   const [errors, setErrors] = useState({});
   const orderPlacedRef = useRef(false);
@@ -94,7 +98,7 @@ const CheckoutPage = () => {
 
       setAvailableGateways(gateways);
       // Keep the customer's choice if it is still on offer.
-      setGateway((current) => (gateways.includes(current) ? current : gateways[0]));
+      setGateway((current) => (gateways.includes(current) ? current : (gateways[0] ?? null)));
     });
 
     return () => {

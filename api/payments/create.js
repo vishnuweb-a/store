@@ -63,7 +63,7 @@ export default async function handler(req, res) {
 
     merchant = selectMerchant(body);
 
-    // TEMPORARILY DISABLED: AIRPAY MID_1 and MID_2 — checkoutMerchants() excludes
+    // TEMPORARILY DISABLED: AIRPAY MID_1, MID_2 and MID_3 — checkoutMerchants() excludes
     // them (AIRPAY_MID_1/AIRPAY_MID_2.enabled = false in _lib/config.js), so they
     // are refused here before any OAuth call, order write or redirect. An absent
     // selection is merchant 1 and is refused too — never moved to merchant 3.

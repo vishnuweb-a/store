@@ -3,6 +3,8 @@
 Date: 2026-11-13. Base commit: `dff49ac` (uncommitted working tree). Paths relative to `store/`.
 Implements design Option B of [07-MULTI-MERCHANT-DESIGN.md](07-MULTI-MERCHANT-DESIGN.md) following [08-NEW-INTEGRATION-PLAYBOOK.md](08-NEW-INTEGRATION-PLAYBOOK.md). No secrets appear in this document.
 
+> **Update 2026-11-16:** slot 3 added and Airpay MID 3 disabled for new checkouts; see [FRONTIVA-PAYIN-3-IMPLEMENTATION.md](FRONTIVA-PAYIN-3-IMPLEMENTATION.md). The "AirPay MID 3 — Unchanged" and `[3]` fallback statements below describe the 2026-11-13 state.
+
 > **Namespaces.** Frontiva PayIn *slots* (1, 2) and AirPay *merchants* (1, 2, 3) are unrelated. PayIn slot 2 is a second Frontiva portal account; it shares nothing with AirPay MID 2 — not credentials, signing, merchant IDs, callbacks or references.
 
 ## 1. Implementation summary

@@ -72,7 +72,7 @@ function env(name) {
  * reads the same roles from `_N` names. A separate namespace from the Airpay
  * merchant numbers: PayIn slot 2 has nothing to do with Airpay MID 2.
  */
-export const FRONTIVA_PAYIN_MERCHANTS = [1, 2];
+export const FRONTIVA_PAYIN_MERCHANTS = [1, 2, 3];
 
 const slotSuffix = (slot) => (slot === 1 ? '' : `_${slot}`);
 
@@ -164,13 +164,15 @@ export function frontivaPayinEnabled(slot = 1) {
 /**
  * A slot ≥ 2 that logs in as another slot's account, or expects another slot's
  * portal merchant id, cannot be told apart from it by any check we make, so it
- * is never offered. Slot 1 is never switched off by another slot's mistake.
+ * is never offered. A slot is compared with lower-numbered slots only, so slot 1
+ * (and slot 2, for slot 3) is never switched off by a later slot's mistake.
  */
 function collidesWithAnotherSlot(config) {
   return (
     config.slot !== 1 &&
     FRONTIVA_PAYIN_MERCHANTS.some((other) => {
-      if (other === config.slot) return false;
+      // Only against earlier slots: a later slot's mistake never switches off an earlier one.
+      if (other >= config.slot) return false;
       const suffix = slotSuffix(other);
       return (
         env(`FRONTIVA_PAYIN_EMAIL${suffix}`).toLowerCase() === config.email.toLowerCase() ||

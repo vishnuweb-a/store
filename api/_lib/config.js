@@ -202,6 +202,19 @@ export const AIRPAY_MID_2 = { enabled: false };
 // ====================================================
 export const AIRPAY_MID_1 = { enabled: false };
 
+// ====================================================
+// TEMPORARILY DISABLED: AIRPAY MID_3
+// Reason: the third checkout option now uses Frontiva PayIn (PayIn slot 3).
+// IMPORTANT: Do not delete the implementation, merchant 3's credentials or
+// its history. Same mechanism as AIRPAY_MID_1/2: hard-coded, not an env var,
+// gates NEW payments only. Callbacks (both paths), /status, /reconcile and the
+// health OAuth probe still use merchant 3 for orders already placed on it.
+// Airpay MID 3 is NOT Frontiva PayIn slot 3: unrelated accounts and secrets.
+// Reactivation requires this flag and the UI (PAYMENT_GATEWAYS in
+// apps/web/src/api/OrdersApi.js and pages/CheckoutPage.jsx).
+// ====================================================
+export const AIRPAY_MID_3 = { enabled: false };
+
 /**
  * Merchants a NEW payment may be started on: AIRPAY_ENABLED_MERCHANTS (default
  * all) narrowed to those actually configured. This is the checkout switch —
@@ -222,9 +235,10 @@ export function checkoutMerchants() {
 
   return MERCHANTS.filter(
     (merchant) =>
-      // TEMPORARILY DISABLED: AIRPAY MID_1 and MID_2 — see the flags above.
+      // TEMPORARILY DISABLED: AIRPAY MID_1, MID_2 and MID_3 — see the flags above.
       (merchant !== 1 || AIRPAY_MID_1.enabled) &&
       (merchant !== 2 || AIRPAY_MID_2.enabled) &&
+      (merchant !== 3 || AIRPAY_MID_3.enabled) &&
       enabled.includes(merchant) &&
       isMerchantConfigured(merchant),
   );
